@@ -1,0 +1,439 @@
+plugins {
+    id 'java'
+}
+
+// Load configuration from mwbuilder.config.json
+import groovy.json.JsonSlurper
+def config = new JsonSlurper().parse(file('mwbuilder.config.json'))
+
+group = config.project.group
+version = config.project.version
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // MotiveWave SDK JAR - local copy with proper InnerClasses attribute
+    // Note: The installed MotiveWave SDK (v2025) has a bytecode bug (missing InnerClasses attribute)
+    compileOnly files('lib/mwave_sdk.jar')
+}
+
+// Ensure resources (strings.properties) are included in JAR
+sourceSets {
+    main {
+        resources {
+            srcDirs = ['src/main/java']
+            include '**/*.properties'
+        }
+    }
+}
+
+jar {
+    archiveBaseName = config.project.name
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from(sourceSets.main.output) {
+        include '**/*.class'
+        include '**/*.properties'
+    }
+}
+
+// Deploy task: copy JAR to MotiveWave Extensions and trigger reload
+task deploy(dependsOn: jar) {
+    doLast {
+        def extDir = file(config.motivewave.extensionsDir)
+        def jarFile = jar.archiveFile.get().asFile
+        def destFile = new File(extDir, jarFile.name)
+
+        // Backup existing JAR if present
+        if (destFile.exists()) {
+            def backupName = "${destFile.name}.${System.currentTimeMillis()}.bak"
+            def backupFile = new File(extDir, backupName)
+            destFile.renameTo(backupFile)
+            println "Backed up existing JAR to: ${backupName}"
+        }
+
+        // Copy new JAR
+        copy {
+            from jarFile
+            into extDir
+        }
+        println "Deployed: ${jarFile.name} -> ${extDir}"
+        println "File size: ${jarFile.length()} bytes"
+
+        // Trigger MotiveWave reload
+        def triggerFile = new File(extDir, config.motivewave.reloadTrigger)
+        triggerFile.text = "${System.currentTimeMillis()}"
+        println "Triggered MotiveWave reload: ${triggerFile.absolutePath}"
+    }
+}
+
+// Full pipeline: clean -> build -> deploy
+task all {
+    dependsOn 'clean', 'deploy'
+    tasks.findByName('deploy').mustRunAfter 'clean'
+}
+
+// ==================== Validation Tasks ====================
+
+// Validate source files before compilation
+task validateSources {
+    description = 'Validates Java source files for common issues'
+    group = 'verification'
+
+    doLast {
+        def srcDir = file('src/main/java')
+        def errors = []
+        def warnings = []
+        def studyCount = 0
+        def strategyCount = 0
+
+        srcDir.eachFileRecurse { file ->
+            if (file.name.endsWith('.java') && file.name != 'package-info.java') {
+                def content = file.text
+                def fileName = file.name
+
+                println "\nValidating: ${fileName}"
+
+                // Check for required patterns
+                def hasPackage = content =~ /^package\s+[\w.]+;/
+                def hasStudyHeader = content =~ /@StudyHeader\s*\(/
+                def extendsStudy = content =~ /extends\s+Study\b/
+                def hasInitialize = content =~ /public\s+void\s+initialize\s*\(\s*Defaults/
+                def hasCalculate = content =~ /protected\s+void\s+calculate\s*\(\s*int/
+
+                if (!hasPackage) errors << "${fileName}: Missing package declaration"
+                if (!hasStudyHeader) errors << "${fileName}: Missing @StudyHeader annotation"
+                if (!extendsStudy) errors << "${fileName}: Must extend Study class"
+                if (!hasInitialize) errors << "${fileName}: Missing initialize() method"
+                if (!hasCalculate) errors << "${fileName}: Missing calculate() method"
+
+                // Check if strategy
+                def isStrategy = content =~ /strategy\s*=\s*true/
+                if (isStrategy) {
+                    strategyCount++
+                    println "  Type: STRATEGY"
+
+                    // Strategy-specific checks
+                    def hasOnSignal = content =~ /public\s+void\s+onSignal\s*\(\s*OrderContext/
+                    if (!hasOnSignal) errors << "${fileName}: Strategy missing onSignal() method"
+
+                    def hasOnActivate = content =~ /public\s+void\s+onActivate/
+                    def hasOnDeactivate = content =~ /public\s+void\s+onDeactivate/
+                    if (!hasOnActivate) warnings << "${fileName}: Strategy should implement onActivate()"
+                    if (!hasOnDeactivate) warnings << "${fileName}: Strategy should implement onDeactivate()"
+                } else {
+                    studyCount++
+                    println "  Type: STUDY"
+                }
+
+                // Check for Values enum
+                def hasValuesEnum = content =~ /enum\s+Values\s*\{/
+                if (!hasValuesEnum) errors << "${fileName}: Missing Values enum"
+
+                // Check for warnings
+                if (content =~ /System\.out\.print/) warnings << "${fileName}: Use debug() instead of System.out"
+                if (content =~ /System\.err\.print/) warnings << "${fileName}: Use debug() instead of System.err"
+                if (content =~ /Thread\.sleep/) warnings << "${fileName}: Avoid Thread.sleep in studies"
+
+                // Check for JavaDoc
+                def hasJavaDoc = content =~ /\/\*\*[\s\S]*?\*\/\s*@StudyHeader/
+                if (!hasJavaDoc) warnings << "${fileName}: Missing JavaDoc before @StudyHeader"
+
+                println "  [OK] Basic validation passed"
+            }
+        }
+
+        println "\n${'='*60}"
+        println "VALIDATION SUMMARY"
+        println "${'='*60}"
+        println "Studies: ${studyCount}"
+        println "Strategies: ${strategyCount}"
+        println "Errors: ${errors.size()}"
+        println "Warnings: ${warnings.size()}"
+
+        if (warnings) {
+            println "\nWarnings:"
+            warnings.each { println "  [WARN] $it" }
+        }
+
+        if (errors) {
+            println "\nErrors:"
+            errors.each { println "  [ERROR] $it" }
+            throw new GradleException("Validation failed with ${errors.size()} error(s)")
+        }
+
+        println "\n[SUCCESS] All validations passed!"
+    }
+}
+
+// Validate JAR contents after build
+task validateJar(dependsOn: jar) {
+    description = 'Validates the built JAR file'
+    group = 'verification'
+
+    doLast {
+        def jarFile = jar.archiveFile.get().asFile
+        if (!jarFile.exists()) {
+            throw new GradleException("JAR file not found: ${jarFile}")
+        }
+
+        println "Validating JAR: ${jarFile.name}"
+        println "Size: ${jarFile.length()} bytes"
+
+        def classCount = 0
+        def propsCount = 0
+        def studyClasses = []
+
+        def zipFile = new java.util.zip.ZipFile(jarFile)
+        try {
+            zipFile.entries().each { entry ->
+                if (entry.name.endsWith('.class')) {
+                    classCount++
+                    // Check for main study/strategy classes (not inner classes)
+                    if (!entry.name.contains('$') && entry.name.count('/') >= 3) {
+                        def className = entry.name.replace('/', '.').replace('.class', '')
+                        studyClasses << className
+                    }
+                } else if (entry.name.endsWith('.properties')) {
+                    propsCount++
+                }
+            }
+        } finally {
+            zipFile.close()
+        }
+
+        println "\nJAR Contents:"
+        println "  Class files: ${classCount}"
+        println "  Properties files: ${propsCount}"
+        println "\nMain classes:"
+        studyClasses.each { println "  - $it" }
+
+        if (classCount == 0) {
+            throw new GradleException("JAR contains no class files!")
+        }
+        if (propsCount == 0) {
+            println "\n[WARN] No properties files found (localization may not work)"
+        }
+
+        println "\n[SUCCESS] JAR validation passed!"
+    }
+}
+
+// Pre-deploy validation
+task validateDeploy(dependsOn: validateJar) {
+    description = 'Validates deployment configuration'
+    group = 'verification'
+
+    doLast {
+        def extDir = file(config.motivewave.extensionsDir)
+
+        println "Checking deployment configuration..."
+        println "Extensions directory: ${extDir}"
+
+        if (!extDir.exists()) {
+            throw new GradleException("Extensions directory not found: ${extDir}")
+        }
+        if (!extDir.isDirectory()) {
+            throw new GradleException("Extensions path is not a directory: ${extDir}")
+        }
+        if (!extDir.canWrite()) {
+            throw new GradleException("Cannot write to extensions directory: ${extDir}")
+        }
+
+        println "[SUCCESS] Deployment configuration valid!"
+    }
+}
+
+// Run all validations
+task validate {
+    description = 'Runs all validation tasks'
+    group = 'verification'
+    dependsOn validateSources
+}
+
+// Make build depend on validation
+compileJava.dependsOn validateSources
+
+// Verified deploy (with all validations)
+task verifiedDeploy {
+    description = 'Build, validate, and deploy with full verification'
+    group = 'deployment'
+    dependsOn validateSources, build, validateJar, validateDeploy, deploy
+}
+
+// ==================== Prompt Validation ====================
+
+// Validate prompt spec files
+task validatePrompts {
+    description = 'Validates prompt spec files in prompts/ directory'
+    group = 'verification'
+
+    doLast {
+        def promptsDir = file('prompts')
+        if (!promptsDir.exists()) {
+            println "No prompts directory found"
+            return
+        }
+
+        def errors = []
+        def validated = 0
+
+        promptsDir.eachFile { file ->
+            if (file.name.endsWith('.md')) {
+                validated++
+                def content = file.text
+                def fileName = file.name
+
+                println "\nValidating prompt: ${fileName}"
+
+                // Parse sections
+                def sections = [:]
+                def currentSection = null
+                def currentContent = []
+
+                content.split('\n').each { line ->
+                    if (line.startsWith('# ')) {
+                        if (currentSection) {
+                            sections[currentSection.toLowerCase()] = currentContent.join('\n').trim()
+                        }
+                        currentSection = line.substring(2).trim()
+                        currentContent = []
+                    } else if (currentSection) {
+                        currentContent << line
+                    }
+                }
+                if (currentSection) {
+                    sections[currentSection.toLowerCase()] = currentContent.join('\n').trim()
+                }
+
+                // Check required sections
+                if (!sections['name'] || sections['name'].isEmpty()) {
+                    errors << "${fileName}: Missing or empty 'Name' section"
+                } else {
+                    println "  Name: ${sections['name']}"
+                }
+
+                if (!sections['type'] || sections['type'].isEmpty()) {
+                    errors << "${fileName}: Missing or empty 'Type' section"
+                } else {
+                    def type = sections['type'].toLowerCase().trim()
+                    if (type != 'study' && type != 'strategy') {
+                        errors << "${fileName}: Type must be 'study' or 'strategy', got '${type}'"
+                    } else {
+                        println "  Type: ${type}"
+                    }
+                }
+
+                if (!sections['behavior'] || sections['behavior'].isEmpty()) {
+                    errors << "${fileName}: Missing or empty 'Behavior' section"
+                } else {
+                    def bulletCount = (sections['behavior'] =~ /-\s/).count
+                    if (bulletCount == 0) {
+                        errors << "${fileName}: Behavior section should have bullet points"
+                    }
+                    println "  Behavior: ${bulletCount} bullet points"
+                }
+
+                if (!sections['outputs']) {
+                    errors << "${fileName}: Missing 'Outputs' section"
+                } else {
+                    def hasPlots = sections['outputs'] =~ /[Pp]lots?:/
+                    def hasSignals = sections['outputs'] =~ /[Ss]ignals?:/
+                    if (!hasPlots && !hasSignals) {
+                        errors << "${fileName}: Outputs must specify Plots and/or Signals"
+                    }
+                    println "  Outputs: plots=${hasPlots ? 'yes' : 'no'}, signals=${hasSignals ? 'yes' : 'no'}"
+                }
+
+                // Strategy-specific checks
+                if (sections['type']?.toLowerCase()?.trim() == 'strategy') {
+                    if (!sections['risk/trade logic'] && !sections['risk']) {
+                        println "  [WARN] Strategy should have 'Risk/Trade Logic' section"
+                    }
+                }
+
+                println "  [OK] Prompt validation passed"
+            }
+        }
+
+        println "\n${'='*60}"
+        println "PROMPT VALIDATION SUMMARY"
+        println "${'='*60}"
+        println "Validated: ${validated} prompt files"
+        println "Errors: ${errors.size()}"
+
+        if (errors) {
+            println "\nErrors:"
+            errors.each { println "  [ERROR] $it" }
+            throw new GradleException("Prompt validation failed with ${errors.size()} error(s)")
+        }
+
+        println "\n[SUCCESS] All prompts validated!"
+    }
+}
+
+// ==================== Reporting Tasks ====================
+
+// Generate a report of all studies/strategies
+task listStudies {
+    description = 'Lists all studies and strategies in the project'
+    group = 'reporting'
+
+    doLast {
+        def srcDir = file('src/main/java')
+        def studies = []
+        def strategies = []
+
+        srcDir.eachFileRecurse { file ->
+            if (file.name.endsWith('.java') && file.name != 'package-info.java') {
+                def content = file.text
+
+                // Extract study info
+                def nameMatch = content =~ /name\s*=\s*"([^"]+)"/
+                def idMatch = content =~ /id\s*=\s*"([^"]+)"/
+                def isStrategy = content =~ /strategy\s*=\s*true/
+
+                if (nameMatch && idMatch) {
+                    def info = [
+                        file: file.name,
+                        name: nameMatch[0][1],
+                        id: idMatch[0][1]
+                    ]
+
+                    if (isStrategy) {
+                        strategies << info
+                    } else {
+                        studies << info
+                    }
+                }
+            }
+        }
+
+        println "\n${'='*60}"
+        println "PROJECT CONTENTS"
+        println "${'='*60}"
+
+        println "\nStudies (${studies.size()}):"
+        studies.each {
+            println "  ${it.name}"
+            println "    ID: ${it.id}"
+            println "    File: ${it.file}"
+        }
+
+        println "\nStrategies (${strategies.size()}):"
+        strategies.each {
+            println "  ${it.name}"
+            println "    ID: ${it.id}"
+            println "    File: ${it.file}"
+        }
+
+        println "\nTotal: ${studies.size() + strategies.size()} items"
+    }
+}

@@ -1,0 +1,29 @@
+# Build outputs
+build/
+out/
+
+# Gradle
+.gradle/
+gradle-temp/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# SDK (binary)
+lib/*.jar
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Backup files
+*.bak
+
+# Claude session files
+.claude/

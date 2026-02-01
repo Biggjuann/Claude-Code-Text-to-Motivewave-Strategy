@@ -1,0 +1,21 @@
+{
+  "project": {
+    "group": "com.mw.studies",
+    "name": "MWGeneratedStudies",
+    "version": "0.1.0"
+  },
+  "motivewave": {
+    "installDir": "C:/Program Files (x86)/MotiveWave",
+    "extensionsDir": "C:/Users/jung_/MotiveWave Extensions",
+    "sdkJar": "lib/mwave_sdk.jar",
+    "reloadTrigger": ".last_updated"
+  },
+  "generation": {
+    "defaultType": "study",
+    "basePackage": "com.mw.studies",
+    "style": {
+      "javaVersion": 21,
+      "preferOnBarUpdate": true
+    }
+  }
+}

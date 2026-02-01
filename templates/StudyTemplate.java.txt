@@ -1,0 +1,114 @@
+package {{PACKAGE}};
+
+import com.motivewave.platform.sdk.common.*;
+import com.motivewave.platform.sdk.common.desc.*;
+import com.motivewave.platform.sdk.draw.*;
+import com.motivewave.platform.sdk.study.Study;
+import com.motivewave.platform.sdk.study.StudyHeader;
+
+/**
+ * {{STUDY_NAME}}
+ *
+ * {{DESCRIPTION}}
+ *
+ * ============================================================
+ * INPUTS
+ * ============================================================
+ * {{INPUTS_DOC}}
+ *
+ * ============================================================
+ * OUTPUTS / PLOTS
+ * ============================================================
+ * {{OUTPUTS_DOC}}
+ *
+ * ============================================================
+ * SIGNALS
+ * ============================================================
+ * {{SIGNALS_DOC}}
+ *
+ * ============================================================
+ * CALCULATION LOGIC
+ * ============================================================
+ * {{LOGIC_DOC}}
+ *
+ * @version {{VERSION}}
+ * @author MW Study Builder
+ * @generated {{TIMESTAMP}}
+ */
+@StudyHeader(
+    namespace = "{{PACKAGE}}",
+    id = "{{STUDY_ID}}",
+    rb = "{{PACKAGE}}.nls.strings",
+    name = "{{STUDY_NAME}}",
+    label = "{{STUDY_LABEL}}",
+    desc = "{{SHORT_DESC}}",
+    menu = "{{MENU}}",
+    overlay = {{IS_OVERLAY}},
+    studyOverlay = true,
+    signals = {{HAS_SIGNALS}}
+)
+public class {{CLASS_NAME}} extends Study {
+
+    // ==================== Constants ====================
+    {{CONSTANTS}}
+
+    // ==================== Values (data series keys) ====================
+    enum Values { {{VALUES_ENUM}} }
+
+    // ==================== Signals ====================
+    {{SIGNALS_ENUM}}
+
+    // ==================== Member Variables ====================
+    {{MEMBER_VARIABLES}}
+
+    // ==================== Initialization ====================
+
+    /**
+     * Initializes the study settings and runtime descriptors.
+     * Called once when the study is first added to a chart.
+     */
+    @Override
+    public void initialize(Defaults defaults) {
+        // Create settings descriptor
+        var sd = createSD();
+
+        {{SETTINGS_TABS}}
+
+        // Quick settings for toolbar
+        {{QUICK_SETTINGS}}
+
+        // Create runtime descriptor
+        var desc = createRD();
+
+        {{RUNTIME_DESCRIPTOR}}
+    }
+
+    // ==================== Lifecycle ====================
+
+    @Override
+    public void onLoad(Defaults defaults) {
+        {{ON_LOAD}}
+    }
+
+    @Override
+    public int getMinBars() {
+        {{GET_MIN_BARS}}
+    }
+
+    // ==================== Calculation ====================
+
+    /**
+     * Main calculation method - called for each bar.
+     *
+     * @param index The bar index to calculate
+     * @param ctx   The data context providing access to price data
+     */
+    @Override
+    protected void calculate(int index, DataContext ctx) {
+        {{CALCULATE_METHOD}}
+    }
+
+    // ==================== Helper Methods ====================
+
+    {{HELPER_METHODS}}
+}

@@ -1,0 +1,141 @@
+package {{PACKAGE}};
+
+import com.motivewave.platform.sdk.common.*;
+import com.motivewave.platform.sdk.common.desc.*;
+import com.motivewave.platform.sdk.draw.*;
+import com.motivewave.platform.sdk.order_mgmt.OrderContext;
+import com.motivewave.platform.sdk.study.Study;
+import com.motivewave.platform.sdk.study.StudyHeader;
+
+/**
+ * {{STRATEGY_NAME}}
+ *
+ * {{DESCRIPTION}}
+ *
+ * ============================================================
+ * INPUTS
+ * ============================================================
+ * {{INPUTS_DOC}}
+ *
+ * ============================================================
+ * ENTRY LOGIC
+ * ============================================================
+ * {{ENTRY_DOC}}
+ *
+ * ============================================================
+ * EXIT LOGIC
+ * ============================================================
+ * {{EXIT_DOC}}
+ *
+ * ============================================================
+ * RISK MANAGEMENT
+ * ============================================================
+ * {{RISK_DOC}}
+ *
+ * @version {{VERSION}}
+ * @author MW Study Builder
+ * @generated {{TIMESTAMP}}
+ */
+@StudyHeader(
+    namespace = "{{PACKAGE}}",
+    id = "{{STRATEGY_ID}}",
+    rb = "{{PACKAGE}}.nls.strings",
+    name = "{{STRATEGY_NAME}}",
+    label = "{{STRATEGY_LABEL}}",
+    desc = "{{SHORT_DESC}}",
+    menu = "{{MENU}}",
+    overlay = true,
+    studyOverlay = true,
+    signals = true,
+    strategy = true,
+    autoEntry = true,
+    manualEntry = false,
+    supportsUnrealizedPL = true,
+    supportsRealizedPL = true,
+    supportsTotalPL = true
+)
+public class {{CLASS_NAME}} extends Study {
+
+    // ==================== Constants ====================
+    {{CONSTANTS}}
+
+    // ==================== Values (data series keys) ====================
+    enum Values { {{VALUES_ENUM}} }
+
+    // ==================== Signals ====================
+    enum Signals { {{SIGNALS_ENUM}} }
+
+    // ==================== Member Variables ====================
+    {{MEMBER_VARIABLES}}
+
+    // ==================== Initialization ====================
+
+    @Override
+    public void initialize(Defaults defaults) {
+        var sd = createSD();
+
+        {{SETTINGS_TABS}}
+
+        // Runtime descriptor
+        var desc = createRD();
+
+        {{RUNTIME_DESCRIPTOR}}
+
+        // Declare signals for strategy
+        {{DECLARE_SIGNALS}}
+    }
+
+    @Override
+    public int getMinBars() {
+        {{GET_MIN_BARS}}
+    }
+
+    // ==================== Calculation ====================
+
+    @Override
+    protected void calculate(int index, DataContext ctx) {
+        {{CALCULATE_METHOD}}
+    }
+
+    // ==================== Strategy Lifecycle ====================
+
+    /**
+     * Called when the strategy is activated (started).
+     * Use this to enter initial positions if enterOnActivate is enabled.
+     */
+    @Override
+    public void onActivate(OrderContext ctx) {
+        if (getSettings().isEnterOnActivate()) {
+            {{ON_ACTIVATE}}
+        }
+    }
+
+    /**
+     * Called when the strategy is deactivated (stopped).
+     * Use this to close positions or clean up.
+     */
+    @Override
+    public void onDeactivate(OrderContext ctx) {
+        {{ON_DEACTIVATE}}
+    }
+
+    /**
+     * Called when a signal is generated.
+     * This is where trade execution logic lives.
+     *
+     * @param ctx    Order context for placing trades
+     * @param signal The signal that was triggered
+     */
+    @Override
+    public void onSignal(OrderContext ctx, Object signal) {
+        var instr = ctx.getInstrument();
+        int position = ctx.getPosition();
+        int qty = getSettings().getTradeLots() * instr.getDefaultQuantity();
+
+        {{ON_SIGNAL}}
+    }
+
+    // ==================== Helper Methods ====================
+
+    {{HELPER_METHODS}}
+}

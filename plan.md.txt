@@ -1,0 +1,348 @@
+Here’s a **clear planning file** you can drop into your repo as `PLAN.md` (or paste into Claude Code as the “project plan”). It’s written to be “agent-friendly”: concrete deliverables, folder structure, commands, and acceptance criteria.
+
+---
+
+## PLAN.md — MotiveWave Study Builder & Deployer (JavaDoc → Compile → Push)
+
+### 0) Goal (what we’re building)
+
+Build a local toolchain that can:
+
+1. Take a **natural-language prompt** (your spec for a MotiveWave Study/Strategy),
+2. Generate:
+
+   * Java source code (Study/Strategy)
+   * Proper **JavaDoc** and metadata
+3. Compile into a **MotiveWave plugin JAR**
+4. Automatically deploy (“push”) the JAR into MotiveWave’s addon/plugins folder
+5. Optionally restart MotiveWave or prompt user to reload addons.
+
+Primary user: **me** (developer), using **Claude Code** to implement and iterate quickly.
+
+---
+
+### 1) Key constraints & assumptions
+
+* MotiveWave custom studies/strategies are Java plugins packaged as a JAR.
+* We will target a specific MotiveWave version (configurable).
+* We will support **one study per project** at first, then extend to multi-study modules.
+* We will not attempt to reverse-engineer MotiveWave internals; we’ll rely on the official SDK conventions and your existing known-good template patterns.
+
+---
+
+### 2) High-level architecture
+
+**Inputs**
+
+* Prompt/spec file: `prompts/<name>.md`
+* Config: `mwbuilder.config.json` (paths, MotiveWave install dir, sdk jar location, plugin id/name, etc.)
+
+**Pipeline**
+
+1. Parse prompt/spec → produce `src/main/java/.../<StudyName>.java`
+2. Ensure required plugin metadata exists (manifest / descriptor)
+3. Build with Gradle → produce `build/libs/<plugin>.jar`
+4. Deploy JAR to MotiveWave addons directory
+5. Validate: confirm file copied + jar checksum + basic smoke checks (class exists in jar)
+
+**Modules**
+
+* `prompt_runner`: reads prompt/spec + optional template constraints
+* `codegen`: generates Java with JavaDoc + consistent structure
+* `builder`: gradle wrapper + compilation
+* `deployer`: copy jar → MotiveWave folder
+* `validator`: basic verification + logs
+
+---
+
+### 3) Repo structure (recommended)
+
+```
+motivewave-study-builder/
+  PLAN.md
+  README.md
+  mwbuilder.config.json
+  prompts/
+    example_study.md
+  templates/
+    StudyTemplate.java.txt
+    StrategyTemplate.java.txt
+    javadoc_blocks.md
+  src/
+    main/
+      java/
+        com/yourorg/mw/
+          GeneratedStudy.java
+      resources/
+        plugin.properties   (or whatever descriptor is required)
+  tools/
+    mwbuilder.py           (or mwbuilder.ts)
+  build.gradle
+  settings.gradle
+  gradlew / gradlew.bat
+```
+
+---
+
+### 4) Config file spec (`mwbuilder.config.json`)
+
+Create a config file like:
+
+```json
+{
+  "project": {
+    "group": "com.yourorg.mw",
+    "name": "MWGeneratedStudies",
+    "version": "0.1.0"
+  },
+  "motivewave": {
+    "addonsDir": "C:/Users/<YOU>/Documents/MotiveWave/addons",
+    "restartCommand": "",
+    "sdkJars": [
+      "C:/path/to/motivewave-sdk.jar"
+    ]
+  },
+  "generation": {
+    "defaultType": "study",
+    "timezone": "America/New_York",
+    "style": {
+      "javaVersion": 8,
+      "strictNullSafety": false,
+      "preferOnBarUpdate": true
+    }
+  }
+}
+```
+
+Notes:
+
+* Keep `addonsDir` configurable because MotiveWave paths vary.
+* `sdkJars` supports adding multiple jars if needed.
+* `restartCommand` optional: some users may not want auto-restart.
+
+---
+
+### 5) Prompt/spec format (`prompts/<name>.md`)
+
+Define a consistent spec Claude can follow. Example:
+
+```md
+# Name
+NY Session Sweep Study
+
+# Type
+study
+
+# Behavior
+- Detects sweep of RTH range (09:30–16:00 NY)
+- Sweep = price trades above range high then closes back inside (no wick-only sweeps)
+- Mark entry arrow on the close that returns inside
+- Plot range high/low lines during session
+- Inputs:
+  - rangeStart (session time)
+  - rangeEnd (session time)
+  - showLabels (bool)
+  - maxSignalsPerDay (int)
+
+# Outputs
+- Plots: rangeHigh, rangeLow
+- Signals: sweepUp, sweepDown
+- Labels: "SweepUp", "SweepDown"
+
+# Risk/Trade Logic (only if strategy)
+N/A
+```
+
+---
+
+### 6) Java generation requirements (non-negotiables)
+
+Generated Java must include:
+
+* File header JavaDoc:
+
+  * Study/Strategy name
+  * Version
+  * What it does
+  * Inputs list
+  * Plots list
+  * Signals list
+  * Notes / assumptions
+* Clear sectioning:
+
+  * `Inputs`
+  * `Initialization`
+  * `Per-bar logic`
+  * `Helper functions`
+* Deterministic naming:
+
+  * Inputs as `Inputs.<NAME>`
+  * Plots as `Values.<NAME>`
+  * Signals as `Signals.<NAME>` (or MotiveWave equivalent)
+* No “mystery magic”:
+
+  * Any math/logic should be explicit and commented.
+
+**Acceptance check**: a dev should be able to open the file and understand it without reading the prompt.
+
+---
+
+### 7) Build system approach (Gradle)
+
+Use Gradle to compile against the SDK jars.
+
+**Deliverables**
+
+* `build.gradle` that:
+
+  * Loads SDK jars from config or a local `libs/` directory
+  * Compiles Java
+  * Packages jar
+* A single command that works:
+
+  * `./gradlew clean build`
+
+**Acceptance check**
+
+* Running build produces `build/libs/*.jar`
+* No manual IDE steps required
+
+---
+
+### 8) Deploy approach (“push to MotiveWave”)
+
+Create a tool script: `tools/mwbuilder.py` (or TS/Node)
+
+Commands:
+
+* `mwbuilder gen prompts/foo.md`
+
+  * writes Java file(s)
+* `mwbuilder build`
+
+  * runs gradle build
+* `mwbuilder deploy`
+
+  * copies jar to addonsDir
+* `mwbuilder all prompts/foo.md`
+
+  * gen → build → deploy
+
+**Deploy details**
+
+* Copy jar to:
+
+  * `<addonsDir>/<projectName>.jar`
+* Print:
+
+  * destination path
+  * file size
+  * timestamp
+  * checksum (optional but recommended)
+
+**Optional**
+
+* If `restartCommand` provided:
+
+  * run it (or instruct user to restart)
+
+**Acceptance check**
+
+* After deploy + MotiveWave restart/reload, the study appears in the UI.
+
+---
+
+### 9) Validation & safety rails
+
+Add lightweight checks to prevent bad pushes:
+
+**Pre-build**
+
+* Ensure config exists
+* Ensure SDK jars exist
+* Ensure addonsDir exists
+
+**Post-build**
+
+* Ensure jar exists
+* Optionally inspect jar to confirm expected class exists
+
+**Deploy**
+
+* Back up previous jar:
+
+  * rename existing to `.bak` with timestamp
+* Copy new jar
+* Confirm destination jar matches source checksum
+
+---
+
+### 10) Development phases (do in order)
+
+**Phase 1 — Skeleton**
+
+* Repo scaffold
+* Config file
+* Gradle builds a simple “Hello Study” plugin jar
+* Manual deploy works
+
+**Phase 2 — CLI tool**
+
+* `mwbuilder build`
+* `mwbuilder deploy`
+
+**Phase 3 — Prompt-driven generation**
+
+* `mwbuilder gen` reads `prompts/*.md`
+* Generates a study from template + prompt fields
+* Builds & deploys
+
+**Phase 4 — Strategy support**
+
+* Add strategy template
+* Add risk inputs / order logic placeholders
+
+**Phase 5 — Quality**
+
+* Better validation
+* More robust spec parsing
+* Test suite for parsing + code generation
+
+---
+
+### 11) Definition of Done (DoD)
+
+Project is “done” when:
+
+* One command runs end-to-end:
+
+  * `mwbuilder all prompts/example_study.md`
+* Output jar is compiled successfully
+* Jar is copied into MotiveWave addons folder
+* After MotiveWave reload/restart, generated study is available and runs without runtime errors
+* The generated Java contains complete JavaDoc and matches prompt behavior
+
+---
+
+### 12) Claude Code instructions (how to use this plan)
+
+When using Claude Code, give it this plan + the following working rules:
+
+* Always keep `mwbuilder.config.json` as the single source of truth for paths.
+* Never hardcode machine-specific paths in source code.
+* Build must be runnable from terminal without IDE.
+* Each phase must end with a runnable command and a quick verification step.
+* Prefer small, testable increments over large rewrites.
+
+---
+
+### 13) “Known unknowns” (things we’ll fill in as we implement)
+
+* Exact MotiveWave SDK jar names and plugin descriptor format on your machine
+* Your MotiveWave addons directory path
+* Whether MotiveWave supports live reload vs restart requirement on your setup
+* Your preferred Java version (often 8/11 depending on SDK)
+
+---
+
+If you want, I can also give you a **second file** called `CLAUDE_TASKS.md` that breaks this into copy/paste Claude Code tasks (“Create build.gradle”, “Create mwbuilder.py”, etc.) so you can run it like a checklist.
