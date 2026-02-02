@@ -16,14 +16,14 @@ import com.motivewave.platform.sdk.study.StudyHeader;
  * Multi-timeframe moving average trend filter with pivot-confirmed entries
  * and automatic order block visualization. AUTO-TRADING ENABLED.
  *
- * Core Concept:
- * - LTF Entry Stack (5/13/34) + HTF Filter Stack (34/55/200)
- * - Generate pending signals when stacks align + fast/mid crossover
- * - Confirm entries only on pivot break
- * - Draw OB lines at signal pivot and invalidate on stop breach
- * - Auto-execute trades with stop/target management
+ * v1.1 Changes:
+ * - HTF filter now optional (toggle)
+ * - Reduced default HTF periods (10/20/50)
+ * - Debug logging shows which conditions fail
+ * - Price above/below MAs now optional
+ * - Pivot confirmation can be disabled
  *
- * @version 1.0.0
+ * @version 1.1.0
  * @author MW Study Builder
  */
 @StudyHeader(
@@ -50,7 +50,6 @@ public class MTFMAModelStrategy extends Study {
     // ==================== Constants ====================
     // MA Settings
     private static final String MA_TYPE = "maType";
-    private static final String VW_DECAY = "vwDecay";
 
     // Entry Stack (LTF)
     private static final String ENTRY_LEN_FAST = "entryLenFast";
@@ -58,16 +57,21 @@ public class MTFMAModelStrategy extends Study {
     private static final String ENTRY_LEN_SLOW = "entryLenSlow";
 
     // HTF Settings
+    private static final String HTF_ENABLED = "htfEnabled";
     private static final String HTF_MODE = "htfMode";
     private static final String HTF_MANUAL = "htfManual";
     private static final String HTF_LEN_FAST = "htfLenFast";
     private static final String HTF_LEN_MID = "htfLenMid";
     private static final String HTF_LEN_SLOW = "htfLenSlow";
 
+    // Entry Filters
+    private static final String REQUIRE_PRICE_ABOVE_MAS = "requirePriceAboveMAs";
+    private static final String REQUIRE_PIVOT_CONFIRM = "requirePivotConfirm";
+    private static final String DEBUG_MODE = "debugMode";
+
     // Display
     private static final String SHOW_ENTRY_MAS = "showEntryMAs";
     private static final String SHOW_HTF_MAS = "showHTFMAs";
-    private static final String MONOCHROME_MODE = "monochromeMode";
 
     // Order Blocks
     private static final String SHOW_OB_LINES = "showOBLines";
@@ -118,32 +122,21 @@ public class MTFMAModelStrategy extends Study {
 
     // ==================== Values ====================
     enum Values {
-        ENTRY_FAST,
-        ENTRY_MID,
-        ENTRY_SLOW,
-        HTF_FAST,
-        HTF_MID,
-        HTF_SLOW,
-        PIVOT_HIGH,
-        PIVOT_LOW,
-        STATE,
-        STOP_LEVEL
+        ENTRY_FAST, ENTRY_MID, ENTRY_SLOW,
+        HTF_FAST, HTF_MID, HTF_SLOW,
+        PIVOT_HIGH, PIVOT_LOW, STATE, STOP_LEVEL
     }
 
     // ==================== Signals ====================
     enum Signals {
-        PENDING_LONG,
-        PENDING_SHORT,
-        CONFIRMED_LONG,
-        CONFIRMED_SHORT
+        PENDING_LONG, PENDING_SHORT,
+        CONFIRMED_LONG, CONFIRMED_SHORT
     }
 
     // ==================== State Constants ====================
     private static final int STATE_IDLE = 0;
     private static final int STATE_PENDING_LONG = 1;
     private static final int STATE_PENDING_SHORT = 2;
-    private static final int STATE_CONFIRMED_LONG = 3;
-    private static final int STATE_CONFIRMED_SHORT = 4;
 
     // ==================== State Tracking ====================
     private int currentState = STATE_IDLE;
@@ -176,40 +169,45 @@ public class MTFMAModelStrategy extends Study {
     public void initialize(Defaults defaults) {
         var sd = createSD();
 
-        // ===== Moving Averages Tab =====
-        var tab = sd.addTab("Moving Averages");
+        // ===== Entry Conditions Tab =====
+        var tab = sd.addTab("Entry Conditions");
 
-        var grp = tab.addGroup("MA Type");
+        var grp = tab.addGroup("Entry Stack (LTF)");
         grp.addRow(new MAMethodDescriptor(MA_TYPE, "MA Method", Enums.MAMethod.EMA));
-        grp.addRow(new DoubleDescriptor(VW_DECAY, "VW Decay Multiplier", 0.85, 0.01, 0.999, 0.01));
-
-        grp = tab.addGroup("Entry Stack (LTF)");
         grp.addRow(new IntegerDescriptor(ENTRY_LEN_FAST, "Fast MA Length", 5, 1, 200, 1));
         grp.addRow(new IntegerDescriptor(ENTRY_LEN_MID, "Mid MA Length", 13, 1, 200, 1));
         grp.addRow(new IntegerDescriptor(ENTRY_LEN_SLOW, "Slow MA Length", 34, 1, 500, 1));
 
+        grp = tab.addGroup("Entry Filters");
+        grp.addRow(new BooleanDescriptor(REQUIRE_PRICE_ABOVE_MAS, "Require Price Above/Below MAs", false));
+        grp.addRow(new BooleanDescriptor(REQUIRE_PIVOT_CONFIRM, "Require Pivot Confirmation", true));
+        grp.addRow(new BooleanDescriptor(DEBUG_MODE, "Debug Mode (Log Conditions)", true));
+
         // ===== HTF Filter Tab =====
         tab = sd.addTab("HTF Filter");
+
+        grp = tab.addGroup("HTF Toggle");
+        grp.addRow(new BooleanDescriptor(HTF_ENABLED, "Enable HTF Filter", false));
 
         grp = tab.addGroup("HTF Mode");
         grp.addRow(new IntegerDescriptor(HTF_MODE, "Mode (0=Auto, 1=Manual)", 0, 0, 1, 1));
         grp.addRow(new IntegerDescriptor(HTF_MANUAL, "Manual HTF (minutes)", 60, 1, 1440, 1));
 
-        grp = tab.addGroup("HTF Stack");
-        grp.addRow(new IntegerDescriptor(HTF_LEN_FAST, "Fast MA Length", 34, 1, 200, 1));
-        grp.addRow(new IntegerDescriptor(HTF_LEN_MID, "Mid MA Length", 55, 1, 300, 1));
-        grp.addRow(new IntegerDescriptor(HTF_LEN_SLOW, "Slow MA Length", 200, 1, 500, 1));
+        grp = tab.addGroup("HTF Stack (Shorter defaults)");
+        grp.addRow(new IntegerDescriptor(HTF_LEN_FAST, "Fast MA Length", 10, 1, 200, 1));
+        grp.addRow(new IntegerDescriptor(HTF_LEN_MID, "Mid MA Length", 20, 1, 300, 1));
+        grp.addRow(new IntegerDescriptor(HTF_LEN_SLOW, "Slow MA Length", 50, 1, 500, 1));
 
         // ===== Trade Settings Tab =====
         tab = sd.addTab("Trade Settings");
 
         grp = tab.addGroup("Position");
         grp.addRow(new IntegerDescriptor(CONTRACTS, "Contracts", 1, 1, 100, 1));
-        grp.addRow(new IntegerDescriptor(MAX_TRADES_PER_DAY, "Max Trades/Day", 2, 1, 20, 1));
+        grp.addRow(new IntegerDescriptor(MAX_TRADES_PER_DAY, "Max Trades/Day", 5, 1, 20, 1));
 
         grp = tab.addGroup("Stop Loss");
         grp.addRow(new BooleanDescriptor(STOPLOSS_ENABLED, "Enable Stop Loss", true));
-        grp.addRow(new IntegerDescriptor(STOP_MODE, "Mode (0=Tracking, 1=Fixed, 2=SignalBar)", 0, 0, 2, 1));
+        grp.addRow(new IntegerDescriptor(STOP_MODE, "Mode (0=Tracking, 1=Fixed, 2=SignalBar)", 1, 0, 2, 1));
         grp.addRow(new DoubleDescriptor(STOP_BUFFER, "Stop Buffer (points)", 1.0, 0.0, 50, 0.25));
         grp.addRow(new DoubleDescriptor(STOP_DISTANCE_POINTS, "Fixed Stop Distance", 10.0, 0.25, 500, 0.25));
 
@@ -231,7 +229,6 @@ public class MTFMAModelStrategy extends Study {
         grp = tab.addGroup("Visibility");
         grp.addRow(new BooleanDescriptor(SHOW_ENTRY_MAS, "Show Entry MAs", true));
         grp.addRow(new BooleanDescriptor(SHOW_HTF_MAS, "Show HTF MAs", true));
-        grp.addRow(new BooleanDescriptor(MONOCHROME_MODE, "Monochrome Mode", false));
 
         grp = tab.addGroup("Entry MA Lines");
         grp.addRow(new PathDescriptor(ENTRY_FAST_PATH, "Fast MA", new Color(0, 200, 255), 1.5f, null, true, true, true));
@@ -261,7 +258,7 @@ public class MTFMAModelStrategy extends Study {
             Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getRed(), defaults.getLineColor(), true, true));
 
         // Quick settings
-        sd.addQuickSettings(ENTRY_LEN_FAST, ENTRY_LEN_MID, ENTRY_LEN_SLOW, MA_TYPE, CONTRACTS);
+        sd.addQuickSettings(ENTRY_LEN_FAST, ENTRY_LEN_MID, ENTRY_LEN_SLOW, MA_TYPE, CONTRACTS, HTF_ENABLED);
 
         // ===== Runtime Descriptor =====
         var desc = createRD();
@@ -289,22 +286,19 @@ public class MTFMAModelStrategy extends Study {
         desc.declareSignal(Signals.CONFIRMED_LONG, "Confirmed Long");
         desc.declareSignal(Signals.CONFIRMED_SHORT, "Confirmed Short");
 
-        // Range keys
         desc.setRangeKeys(Values.ENTRY_FAST, Values.ENTRY_MID, Values.ENTRY_SLOW);
     }
 
     @Override
     public void onLoad(Defaults defaults) {
         int slow = getSettings().getInteger(ENTRY_LEN_SLOW, 34);
-        int htfSlow = getSettings().getInteger(HTF_LEN_SLOW, 200);
-        setMinBars(Math.max(slow, htfSlow) * 2);
+        setMinBars(slow + 10);
     }
 
     @Override
     public int getMinBars() {
         int slow = getSettings().getInteger(ENTRY_LEN_SLOW, 34);
-        int htfSlow = getSettings().getInteger(HTF_LEN_SLOW, 200);
-        return Math.max(slow, htfSlow) * 2;
+        return slow + 10;
     }
 
     // ==================== Strategy Lifecycle ====================
@@ -332,22 +326,18 @@ public class MTFMAModelStrategy extends Study {
         var instr = ctx.getInstrument();
         int position = ctx.getPosition();
         int contracts = getSettings().getInteger(CONTRACTS, 1);
-        int maxTrades = getSettings().getInteger(MAX_TRADES_PER_DAY, 2);
+        int maxTrades = getSettings().getInteger(MAX_TRADES_PER_DAY, 5);
 
-        // Check trade limit
         if (tradesToday >= maxTrades) {
             debug("Max trades reached for today: " + tradesToday);
             return;
         }
 
         if (signal == Signals.CONFIRMED_LONG) {
-            // Close any short position first
             if (position < 0) {
                 ctx.closeAtMarket();
                 debug("Closed SHORT before entering LONG");
             }
-
-            // Enter long if not already long
             if (position <= 0) {
                 ctx.buy(contracts);
                 tradesToday++;
@@ -355,17 +345,14 @@ public class MTFMAModelStrategy extends Study {
                 isLongTrade = true;
                 entryPrice = instr.getLastPrice();
                 setupStopAndTarget(ctx, true);
-                debug("LONG executed at " + entryPrice + ", contracts=" + contracts);
+                debug(">>> LONG EXECUTED at " + entryPrice + ", contracts=" + contracts);
             }
         }
         else if (signal == Signals.CONFIRMED_SHORT) {
-            // Close any long position first
             if (position > 0) {
                 ctx.closeAtMarket();
                 debug("Closed LONG before entering SHORT");
             }
-
-            // Enter short if not already short
             if (position >= 0) {
                 ctx.sell(contracts);
                 tradesToday++;
@@ -373,7 +360,7 @@ public class MTFMAModelStrategy extends Study {
                 isLongTrade = false;
                 entryPrice = instr.getLastPrice();
                 setupStopAndTarget(ctx, false);
-                debug("SHORT executed at " + entryPrice + ", contracts=" + contracts);
+                debug(">>> SHORT EXECUTED at " + entryPrice + ", contracts=" + contracts);
             }
         }
     }
@@ -385,13 +372,11 @@ public class MTFMAModelStrategy extends Study {
         int index = series.size() - 1;
         int position = ctx.getPosition();
 
-        // Get bar time for EOD check
         long barTime = series.getStartTime(index);
         Calendar cal = Calendar.getInstance(ctx.getDataContext().getTimeZone());
         cal.setTimeInMillis(barTime);
         int barTimeInt = cal.get(Calendar.HOUR_OF_DAY) * 100 + cal.get(Calendar.MINUTE);
 
-        // Reset daily counter
         int barDay = cal.get(Calendar.DAY_OF_YEAR);
         if (barDay != lastTradeDay) {
             tradesToday = 0;
@@ -399,7 +384,7 @@ public class MTFMAModelStrategy extends Study {
             eodProcessed = false;
         }
 
-        // ===== EOD FLATTENING (Highest Priority) =====
+        // EOD FLATTENING
         boolean eodEnabled = getSettings().getBoolean(EOD_CLOSE_ENABLED, true);
         int eodTime = getSettings().getInteger(EOD_CLOSE_TIME, 1555);
 
@@ -414,42 +399,37 @@ public class MTFMAModelStrategy extends Study {
             return;
         }
 
-        // ===== STOP/TARGET MANAGEMENT =====
+        // STOP/TARGET MANAGEMENT
         if (position != 0 && inTrade) {
-            double close = series.getClose(index);
             double high = series.getHigh(index);
             double low = series.getLow(index);
 
             if (isLongTrade) {
-                // Check stop loss
                 if (low <= stopPrice) {
                     ctx.closeAtMarket();
-                    debug("STOP HIT (Long): Exit at market, stop was " + stopPrice);
+                    debug("STOP HIT (Long): stop=" + stopPrice);
                     inTrade = false;
                     resetTradeState();
                     return;
                 }
-                // Check take profit
                 if (high >= targetPrice) {
                     ctx.closeAtMarket();
-                    debug("TARGET HIT (Long): Exit at market, target was " + targetPrice);
+                    debug("TARGET HIT (Long): target=" + targetPrice);
                     inTrade = false;
                     resetTradeState();
                     return;
                 }
             } else {
-                // Check stop loss
                 if (high >= stopPrice) {
                     ctx.closeAtMarket();
-                    debug("STOP HIT (Short): Exit at market, stop was " + stopPrice);
+                    debug("STOP HIT (Short): stop=" + stopPrice);
                     inTrade = false;
                     resetTradeState();
                     return;
                 }
-                // Check take profit
                 if (low <= targetPrice) {
                     ctx.closeAtMarket();
-                    debug("TARGET HIT (Short): Exit at market, target was " + targetPrice);
+                    debug("TARGET HIT (Short): target=" + targetPrice);
                     inTrade = false;
                     resetTradeState();
                     return;
@@ -457,7 +437,6 @@ public class MTFMAModelStrategy extends Study {
             }
         }
 
-        // Sync inTrade with actual position
         if (position == 0 && inTrade) {
             inTrade = false;
             resetTradeState();
@@ -476,26 +455,24 @@ public class MTFMAModelStrategy extends Study {
         int entryFastLen = getSettings().getInteger(ENTRY_LEN_FAST, 5);
         int entryMidLen = getSettings().getInteger(ENTRY_LEN_MID, 13);
         int entrySlowLen = getSettings().getInteger(ENTRY_LEN_SLOW, 34);
-        int htfFastLen = getSettings().getInteger(HTF_LEN_FAST, 34);
-        int htfMidLen = getSettings().getInteger(HTF_LEN_MID, 55);
-        int htfSlowLen = getSettings().getInteger(HTF_LEN_SLOW, 200);
+        boolean htfEnabled = getSettings().getBoolean(HTF_ENABLED, false);
+        int htfFastLen = getSettings().getInteger(HTF_LEN_FAST, 10);
+        int htfMidLen = getSettings().getInteger(HTF_LEN_MID, 20);
+        int htfSlowLen = getSettings().getInteger(HTF_LEN_SLOW, 50);
         boolean showEntryMAs = getSettings().getBoolean(SHOW_ENTRY_MAS, true);
         boolean showHTFMAs = getSettings().getBoolean(SHOW_HTF_MAS, true);
-        boolean stoplossEnabled = getSettings().getBoolean(STOPLOSS_ENABLED, true);
-        int stopMode = getSettings().getInteger(STOP_MODE, STOP_TRACKING_EXTREME);
-        double stopBuffer = getSettings().getDouble(STOP_BUFFER, 1.0);
-        int maxTrades = getSettings().getInteger(MAX_TRADES_PER_DAY, 2);
+        boolean requirePriceAboveMAs = getSettings().getBoolean(REQUIRE_PRICE_ABOVE_MAS, false);
+        boolean requirePivotConfirm = getSettings().getBoolean(REQUIRE_PIVOT_CONFIRM, true);
+        boolean debugMode = getSettings().getBoolean(DEBUG_MODE, true);
+        int maxTrades = getSettings().getInteger(MAX_TRADES_PER_DAY, 5);
 
-        // Need enough bars
-        int minBars = Math.max(entrySlowLen, htfSlowLen);
-        if (index < minBars) return;
+        if (index < entrySlowLen) return;
 
         double close = series.getClose(index);
         double high = series.getHigh(index);
         double low = series.getLow(index);
         long barTime = series.getStartTime(index);
 
-        // Reset daily counter
         int barDay = getDayOfYear(barTime, ctx.getTimeZone());
         if (barDay != lastTradeDay) {
             tradesToday = 0;
@@ -503,7 +480,7 @@ public class MTFMAModelStrategy extends Study {
             eodProcessed = false;
         }
 
-        // ===== Calculate Entry Stack (LTF) MAs =====
+        // Calculate Entry Stack MAs
         Double entryFast = series.ma(maMethod, index, entryFastLen, Enums.BarInput.CLOSE);
         Double entryMid = series.ma(maMethod, index, entryMidLen, Enums.BarInput.CLOSE);
         Double entrySlow = series.ma(maMethod, index, entrySlowLen, Enums.BarInput.CLOSE);
@@ -516,27 +493,31 @@ public class MTFMAModelStrategy extends Study {
             series.setDouble(index, Values.ENTRY_SLOW, entrySlow);
         }
 
-        // ===== Calculate HTF MAs =====
-        int htfMultiplier = getHTFMultiplier(series);
-        int htfFastPeriod = htfFastLen * htfMultiplier;
-        int htfMidPeriod = htfMidLen * htfMultiplier;
-        int htfSlowPeriod = htfSlowLen * htfMultiplier;
-
+        // Calculate HTF MAs (if enabled)
         Double htfFast = null, htfMid = null, htfSlow = null;
+        boolean htfDataAvailable = false;
 
-        if (index >= htfSlowPeriod) {
-            htfFast = series.ma(maMethod, index, htfFastPeriod, Enums.BarInput.CLOSE);
-            htfMid = series.ma(maMethod, index, htfMidPeriod, Enums.BarInput.CLOSE);
-            htfSlow = series.ma(maMethod, index, htfSlowPeriod, Enums.BarInput.CLOSE);
+        if (htfEnabled) {
+            int htfMultiplier = getHTFMultiplier(series);
+            int htfFastPeriod = htfFastLen * htfMultiplier;
+            int htfMidPeriod = htfMidLen * htfMultiplier;
+            int htfSlowPeriod = htfSlowLen * htfMultiplier;
 
-            if (showHTFMAs && htfFast != null && htfMid != null && htfSlow != null) {
-                series.setDouble(index, Values.HTF_FAST, htfFast);
-                series.setDouble(index, Values.HTF_MID, htfMid);
-                series.setDouble(index, Values.HTF_SLOW, htfSlow);
+            if (index >= htfSlowPeriod) {
+                htfFast = series.ma(maMethod, index, htfFastPeriod, Enums.BarInput.CLOSE);
+                htfMid = series.ma(maMethod, index, htfMidPeriod, Enums.BarInput.CLOSE);
+                htfSlow = series.ma(maMethod, index, htfSlowPeriod, Enums.BarInput.CLOSE);
+                htfDataAvailable = (htfFast != null && htfMid != null && htfSlow != null);
+
+                if (showHTFMAs && htfDataAvailable) {
+                    series.setDouble(index, Values.HTF_FAST, htfFast);
+                    series.setDouble(index, Values.HTF_MID, htfMid);
+                    series.setDouble(index, Values.HTF_SLOW, htfSlow);
+                }
             }
         }
 
-        // ===== Pivot Detection =====
+        // Pivot Detection
         if (index >= 2) {
             double prevClose = series.getClose(index - 1);
             double prevOpen = series.getOpen(index - 1);
@@ -548,124 +529,180 @@ public class MTFMAModelStrategy extends Study {
             boolean prevBearish = prevClose < prevOpen;
             boolean prev2Bullish = prev2Close > prev2Open;
 
-            // Pivot low: bullish candle after bearish
             if (prevBullish && prev2Bearish) {
-                double pivLow = series.getLow(index - 1);
-                if (Double.isNaN(pivotLowPrice) || pivLow < pivotLowPrice) {
-                    pivotLowPrice = pivLow;
-                    pivotLowBarIndex = index - 1;
-                }
+                pivotLowPrice = series.getLow(index - 1);
+                pivotLowBarIndex = index - 1;
             }
 
-            // Pivot high: bearish candle after bullish
             if (prevBearish && prev2Bullish) {
-                double pivHigh = series.getHigh(index - 1);
-                if (Double.isNaN(pivotHighPrice) || pivHigh > pivotHighPrice) {
-                    pivotHighPrice = pivHigh;
-                    pivotHighBarIndex = index - 1;
-                }
+                pivotHighPrice = series.getHigh(index - 1);
+                pivotHighBarIndex = index - 1;
             }
         }
 
-        // Only process signals on completed bars
         if (!series.isBarComplete(index)) return;
 
-        // ===== Determine Stack Bias =====
+        // ===== Condition Checks with Debug Logging =====
         boolean entryStackBullish = entryFast > entryMid && entryMid > entrySlow;
         boolean entryStackBearish = entryFast < entryMid && entryMid < entrySlow;
         boolean priceAboveEntryMAs = close > entryFast && close > entryMid && close > entrySlow;
         boolean priceBelowEntryMAs = close < entryFast && close < entryMid && close < entrySlow;
 
-        boolean htfStackBullish = false;
-        boolean htfStackBearish = false;
-        boolean priceAboveHTFMAs = false;
-        boolean priceBelowHTFMAs = false;
+        boolean htfStackBullish = true;  // Default true if HTF disabled
+        boolean htfStackBearish = true;
+        boolean priceAboveHTFMAs = true;
+        boolean priceBelowHTFMAs = true;
 
-        if (htfFast != null && htfMid != null && htfSlow != null) {
+        if (htfEnabled && htfDataAvailable) {
             htfStackBullish = htfFast > htfMid && htfMid > htfSlow;
             htfStackBearish = htfFast < htfMid && htfMid < htfSlow;
             priceAboveHTFMAs = close > htfFast && close > htfMid && close > htfSlow;
             priceBelowHTFMAs = close < htfFast && close < htfMid && close < htfSlow;
         }
 
-        // ===== Check for Fast/Mid Crossovers =====
         boolean crossAbove = crossedAbove(series, index, Values.ENTRY_FAST, Values.ENTRY_MID);
         boolean crossBelow = crossedBelow(series, index, Values.ENTRY_FAST, Values.ENTRY_MID);
 
-        // ===== State Machine Logic =====
-
         // Track extremes while pending
         if (currentState == STATE_PENDING_LONG) {
-            if (Double.isNaN(minLowSincePending)) {
-                minLowSincePending = low;
-            } else {
-                minLowSincePending = Math.min(minLowSincePending, low);
-            }
+            minLowSincePending = Double.isNaN(minLowSincePending) ? low : Math.min(minLowSincePending, low);
         } else if (currentState == STATE_PENDING_SHORT) {
-            if (Double.isNaN(maxHighSincePending)) {
-                maxHighSincePending = high;
-            } else {
-                maxHighSincePending = Math.max(maxHighSincePending, high);
-            }
+            maxHighSincePending = Double.isNaN(maxHighSincePending) ? high : Math.max(maxHighSincePending, high);
         }
 
-        // Check for stop invalidation on pending states
-        if (stoplossEnabled && (currentState == STATE_PENDING_LONG || currentState == STATE_PENDING_SHORT)) {
-            double pendingStopPrice = calculatePendingStopPrice(currentState == STATE_PENDING_LONG,
-                stopMode, stopBuffer, series, index);
-
-            if (currentState == STATE_PENDING_LONG && low <= pendingStopPrice) {
-                invalidateOBLine(true);
-                resetSignalState();
-            } else if (currentState == STATE_PENDING_SHORT && high >= pendingStopPrice) {
-                invalidateOBLine(false);
-                resetSignalState();
-            }
-        }
-
-        // Pending Long conditions
+        // ===== LONG SIGNAL LOGIC =====
         if (currentState == STATE_IDLE && crossAbove && tradesToday < maxTrades) {
-            if (entryStackBullish && priceAboveEntryMAs && htfStackBullish && priceAboveHTFMAs) {
-                currentState = STATE_PENDING_LONG;
-                signalBarIndex = index;
-                signalBarLow = low;
-                signalBarHigh = high;
-                minLowSincePending = low;
+            // Check conditions and log failures
+            boolean canEnterLong = true;
+            StringBuilder failReasons = new StringBuilder();
 
-                series.setBoolean(index, Signals.PENDING_LONG, true);
-                ctx.signal(index, Signals.PENDING_LONG, "Pending Long - awaiting pivot confirmation", close);
+            if (!entryStackBullish) {
+                canEnterLong = false;
+                failReasons.append("EntryStack not bullish (").append(String.format("%.2f>%.2f>%.2f", entryFast, entryMid, entrySlow)).append(") ");
+            }
 
-                var marker = getSettings().getMarker(Inputs.UP_MARKER);
-                if (marker.isEnabled()) {
-                    var coord = new Coordinate(barTime, low);
-                    addFigure(new Marker(coord, Enums.Position.BOTTOM, marker, "PENDING L"));
+            if (requirePriceAboveMAs && !priceAboveEntryMAs) {
+                canEnterLong = false;
+                failReasons.append("Price not above entry MAs ");
+            }
+
+            if (htfEnabled) {
+                if (!htfDataAvailable) {
+                    canEnterLong = false;
+                    failReasons.append("HTF data not available ");
+                } else if (!htfStackBullish) {
+                    canEnterLong = false;
+                    failReasons.append("HTF stack not bullish ");
+                } else if (requirePriceAboveMAs && !priceAboveHTFMAs) {
+                    canEnterLong = false;
+                    failReasons.append("Price not above HTF MAs ");
+                }
+            }
+
+            if (debugMode && crossAbove) {
+                if (canEnterLong) {
+                    debug(">>> CROSSOVER UP: All conditions MET for LONG");
+                } else {
+                    debug(">>> CROSSOVER UP: FAILED - " + failReasons.toString());
+                }
+            }
+
+            if (canEnterLong) {
+                if (requirePivotConfirm) {
+                    currentState = STATE_PENDING_LONG;
+                    signalBarIndex = index;
+                    signalBarLow = low;
+                    signalBarHigh = high;
+                    minLowSincePending = low;
+
+                    series.setBoolean(index, Signals.PENDING_LONG, true);
+                    ctx.signal(index, Signals.PENDING_LONG, "Pending Long - awaiting pivot confirmation", close);
+
+                    var marker = getSettings().getMarker(Inputs.UP_MARKER);
+                    if (marker.isEnabled()) {
+                        addFigure(new Marker(new Coordinate(barTime, low), Enums.Position.BOTTOM, marker, "PEND L"));
+                    }
+                    debug("PENDING LONG created, waiting for pivot high break above " + pivotHighPrice);
+                } else {
+                    // No pivot confirmation required - enter immediately
+                    series.setBoolean(index, Signals.CONFIRMED_LONG, true);
+                    ctx.signal(index, Signals.CONFIRMED_LONG, "Long Signal (no pivot confirm)", close);
+
+                    var marker = getSettings().getMarker(Inputs.UP_MARKER);
+                    if (marker.isEnabled()) {
+                        addFigure(new Marker(new Coordinate(barTime, low - instr.getTickSize() * 3), Enums.Position.BOTTOM, marker, "LONG"));
+                    }
                 }
             }
         }
 
-        // Pending Short conditions
+        // ===== SHORT SIGNAL LOGIC =====
         if (currentState == STATE_IDLE && crossBelow && tradesToday < maxTrades) {
-            if (entryStackBearish && priceBelowEntryMAs && htfStackBearish && priceBelowHTFMAs) {
-                currentState = STATE_PENDING_SHORT;
-                signalBarIndex = index;
-                signalBarLow = low;
-                signalBarHigh = high;
-                maxHighSincePending = high;
+            boolean canEnterShort = true;
+            StringBuilder failReasons = new StringBuilder();
 
-                series.setBoolean(index, Signals.PENDING_SHORT, true);
-                ctx.signal(index, Signals.PENDING_SHORT, "Pending Short - awaiting pivot confirmation", close);
+            if (!entryStackBearish) {
+                canEnterShort = false;
+                failReasons.append("EntryStack not bearish (").append(String.format("%.2f<%.2f<%.2f", entryFast, entryMid, entrySlow)).append(") ");
+            }
 
-                var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
-                if (marker.isEnabled()) {
-                    var coord = new Coordinate(barTime, high);
-                    addFigure(new Marker(coord, Enums.Position.TOP, marker, "PENDING S"));
+            if (requirePriceAboveMAs && !priceBelowEntryMAs) {
+                canEnterShort = false;
+                failReasons.append("Price not below entry MAs ");
+            }
+
+            if (htfEnabled) {
+                if (!htfDataAvailable) {
+                    canEnterShort = false;
+                    failReasons.append("HTF data not available ");
+                } else if (!htfStackBearish) {
+                    canEnterShort = false;
+                    failReasons.append("HTF stack not bearish ");
+                } else if (requirePriceAboveMAs && !priceBelowHTFMAs) {
+                    canEnterShort = false;
+                    failReasons.append("Price not below HTF MAs ");
+                }
+            }
+
+            if (debugMode && crossBelow) {
+                if (canEnterShort) {
+                    debug(">>> CROSSOVER DOWN: All conditions MET for SHORT");
+                } else {
+                    debug(">>> CROSSOVER DOWN: FAILED - " + failReasons.toString());
+                }
+            }
+
+            if (canEnterShort) {
+                if (requirePivotConfirm) {
+                    currentState = STATE_PENDING_SHORT;
+                    signalBarIndex = index;
+                    signalBarLow = low;
+                    signalBarHigh = high;
+                    maxHighSincePending = high;
+
+                    series.setBoolean(index, Signals.PENDING_SHORT, true);
+                    ctx.signal(index, Signals.PENDING_SHORT, "Pending Short - awaiting pivot confirmation", close);
+
+                    var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
+                    if (marker.isEnabled()) {
+                        addFigure(new Marker(new Coordinate(barTime, high), Enums.Position.TOP, marker, "PEND S"));
+                    }
+                    debug("PENDING SHORT created, waiting for pivot low break below " + pivotLowPrice);
+                } else {
+                    series.setBoolean(index, Signals.CONFIRMED_SHORT, true);
+                    ctx.signal(index, Signals.CONFIRMED_SHORT, "Short Signal (no pivot confirm)", close);
+
+                    var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
+                    if (marker.isEnabled()) {
+                        addFigure(new Marker(new Coordinate(barTime, high + instr.getTickSize() * 3), Enums.Position.TOP, marker, "SHORT"));
+                    }
                 }
             }
         }
 
-        // Long Confirmation
+        // Long Confirmation (pivot break)
         if (currentState == STATE_PENDING_LONG && !Double.isNaN(pivotHighPrice) && close > pivotHighPrice) {
-            currentState = STATE_CONFIRMED_LONG;
+            debug(">>> LONG CONFIRMED: Close " + close + " > Pivot High " + pivotHighPrice);
 
             series.setBoolean(index, Signals.CONFIRMED_LONG, true);
             ctx.signal(index, Signals.CONFIRMED_LONG, "Long Confirmed - broke pivot high " + pivotHighPrice, close);
@@ -676,16 +713,15 @@ public class MTFMAModelStrategy extends Study {
 
             var marker = getSettings().getMarker(Inputs.UP_MARKER);
             if (marker.isEnabled()) {
-                var coord = new Coordinate(barTime, low - (instr.getTickSize() * 5));
-                addFigure(new Marker(coord, Enums.Position.BOTTOM, marker, "LONG"));
+                addFigure(new Marker(new Coordinate(barTime, low - instr.getTickSize() * 5), Enums.Position.BOTTOM, marker, "LONG"));
             }
 
             resetSignalState();
         }
 
-        // Short Confirmation
+        // Short Confirmation (pivot break)
         if (currentState == STATE_PENDING_SHORT && !Double.isNaN(pivotLowPrice) && close < pivotLowPrice) {
-            currentState = STATE_CONFIRMED_SHORT;
+            debug(">>> SHORT CONFIRMED: Close " + close + " < Pivot Low " + pivotLowPrice);
 
             series.setBoolean(index, Signals.CONFIRMED_SHORT, true);
             ctx.signal(index, Signals.CONFIRMED_SHORT, "Short Confirmed - broke pivot low " + pivotLowPrice, close);
@@ -696,16 +732,13 @@ public class MTFMAModelStrategy extends Study {
 
             var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
             if (marker.isEnabled()) {
-                var coord = new Coordinate(barTime, high + (instr.getTickSize() * 5));
-                addFigure(new Marker(coord, Enums.Position.TOP, marker, "SHORT"));
+                addFigure(new Marker(new Coordinate(barTime, high + instr.getTickSize() * 5), Enums.Position.TOP, marker, "SHORT"));
             }
 
             resetSignalState();
         }
 
-        // Update OB lines
         updateOBLines(barTime);
-
         series.setComplete(index);
     }
 
@@ -713,8 +746,7 @@ public class MTFMAModelStrategy extends Study {
 
     private void setupStopAndTarget(OrderContext ctx, boolean isLong) {
         var instr = ctx.getInstrument();
-        boolean stoplossEnabled = getSettings().getBoolean(STOPLOSS_ENABLED, true);
-        int stopMode = getSettings().getInteger(STOP_MODE, STOP_TRACKING_EXTREME);
+        int stopMode = getSettings().getInteger(STOP_MODE, STOP_FIXED_POINTS);
         double stopBuffer = getSettings().getDouble(STOP_BUFFER, 1.0);
         double stopDistancePoints = getSettings().getDouble(STOP_DISTANCE_POINTS, 10.0);
         int tpMode = getSettings().getInteger(TP_MODE, TP_RR_MULTIPLE);
@@ -728,30 +760,18 @@ public class MTFMAModelStrategy extends Study {
                 case STOP_TRACKING_EXTREME:
                     stopPrice = Double.isNaN(minLowSincePending) ? entryPrice - stopDistancePoints : minLowSincePending - stopBuffer;
                     break;
-                case STOP_FIXED_POINTS:
-                    stopPrice = entryPrice - stopDistancePoints - stopBuffer;
-                    break;
                 case STOP_SIGNAL_BAR:
                     stopPrice = Double.isNaN(signalBarLow) ? entryPrice - stopDistancePoints : signalBarLow - stopBuffer;
                     break;
                 default:
                     stopPrice = entryPrice - stopDistancePoints;
             }
-
             stopDist = entryPrice - stopPrice;
-
-            if (tpMode == TP_RR_MULTIPLE) {
-                targetPrice = entryPrice + (stopDist * rrMultiple);
-            } else {
-                targetPrice = entryPrice + fixedTpPoints;
-            }
+            targetPrice = (tpMode == TP_RR_MULTIPLE) ? entryPrice + (stopDist * rrMultiple) : entryPrice + fixedTpPoints;
         } else {
             switch (stopMode) {
                 case STOP_TRACKING_EXTREME:
                     stopPrice = Double.isNaN(maxHighSincePending) ? entryPrice + stopDistancePoints : maxHighSincePending + stopBuffer;
-                    break;
-                case STOP_FIXED_POINTS:
-                    stopPrice = entryPrice + stopDistancePoints + stopBuffer;
                     break;
                 case STOP_SIGNAL_BAR:
                     stopPrice = Double.isNaN(signalBarHigh) ? entryPrice + stopDistancePoints : signalBarHigh + stopBuffer;
@@ -759,61 +779,23 @@ public class MTFMAModelStrategy extends Study {
                 default:
                     stopPrice = entryPrice + stopDistancePoints;
             }
-
             stopDist = stopPrice - entryPrice;
-
-            if (tpMode == TP_RR_MULTIPLE) {
-                targetPrice = entryPrice - (stopDist * rrMultiple);
-            } else {
-                targetPrice = entryPrice - fixedTpPoints;
-            }
+            targetPrice = (tpMode == TP_RR_MULTIPLE) ? entryPrice - (stopDist * rrMultiple) : entryPrice - fixedTpPoints;
         }
 
         stopPrice = instr.round(stopPrice);
         targetPrice = instr.round(targetPrice);
-
         debug(String.format("Stop/Target: Entry=%.2f, Stop=%.2f, Target=%.2f", entryPrice, stopPrice, targetPrice));
-    }
-
-    private double calculatePendingStopPrice(boolean isLong, int stopMode, double stopBuffer, DataSeries series, int index) {
-        double stopDistancePoints = getSettings().getDouble(STOP_DISTANCE_POINTS, 10.0);
-
-        if (isLong) {
-            switch (stopMode) {
-                case STOP_TRACKING_EXTREME:
-                    return Double.isNaN(minLowSincePending) ? Double.MIN_VALUE : minLowSincePending - stopBuffer;
-                case STOP_FIXED_POINTS:
-                    return series.getClose(index) - stopDistancePoints - stopBuffer;
-                case STOP_SIGNAL_BAR:
-                    return Double.isNaN(signalBarLow) ? Double.MIN_VALUE : signalBarLow - stopBuffer;
-                default:
-                    return Double.MIN_VALUE;
-            }
-        } else {
-            switch (stopMode) {
-                case STOP_TRACKING_EXTREME:
-                    return Double.isNaN(maxHighSincePending) ? Double.MAX_VALUE : maxHighSincePending + stopBuffer;
-                case STOP_FIXED_POINTS:
-                    return series.getClose(index) + stopDistancePoints + stopBuffer;
-                case STOP_SIGNAL_BAR:
-                    return Double.isNaN(signalBarHigh) ? Double.MAX_VALUE : signalBarHigh + stopBuffer;
-                default:
-                    return Double.MAX_VALUE;
-            }
-        }
     }
 
     private int getHTFMultiplier(DataSeries series) {
         int htfMode = getSettings().getInteger(HTF_MODE, HTF_MODE_AUTO);
-
         if (htfMode == HTF_MODE_MANUAL) {
             int htfManual = getSettings().getInteger(HTF_MANUAL, 60);
             int ltfMinutes = estimateBarMinutes(series);
             return Math.max(1, htfManual / ltfMinutes);
         }
-
         int ltfMinutes = estimateBarMinutes(series);
-
         if (ltfMinutes <= 5) return 12;
         else if (ltfMinutes <= 15) return 16;
         else if (ltfMinutes <= 60) return 24;
@@ -823,8 +805,7 @@ public class MTFMAModelStrategy extends Study {
     private int estimateBarMinutes(DataSeries series) {
         if (series.size() < 2) return 5;
         long diff = series.getStartTime(1) - series.getStartTime(0);
-        int minutes = (int)(diff / 60000);
-        return Math.max(1, minutes);
+        return Math.max(1, (int)(diff / 60000));
     }
 
     private int getDayOfYear(long time, java.util.TimeZone tz) {
@@ -835,10 +816,7 @@ public class MTFMAModelStrategy extends Study {
 
     private void addOBLine(double price, int barIndex, long endTime, boolean isBullish, DataSeries series) {
         int maxLines = getSettings().getInteger(MAX_OB_LINES, 20);
-
-        while (obLines.size() >= maxLines) {
-            obLines.remove(0);
-        }
+        while (obLines.size() >= maxLines) obLines.remove(0);
 
         OBLine line = new OBLine();
         line.price = price;
@@ -847,52 +825,25 @@ public class MTFMAModelStrategy extends Study {
         line.endTime = endTime;
         line.isBullish = isBullish;
         line.valid = true;
-
         obLines.add(line);
-        drawOBLine(line, series);
-    }
 
-    private void drawOBLine(OBLine line, DataSeries series) {
-        Color color = line.isBullish ? new Color(0, 180, 0, 180) : new Color(180, 0, 0, 180);
-
-        var start = new Coordinate(line.startTime, line.price);
-        var end = new Coordinate(line.endTime, line.price);
-
-        Line fig = new Line(start, end);
+        Color color = isBullish ? new Color(0, 180, 0, 180) : new Color(180, 0, 0, 180);
+        Line fig = new Line(new Coordinate(line.startTime, price), new Coordinate(endTime, price));
         fig.setColor(color);
-        fig.setStroke(new java.awt.BasicStroke(2.0f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
-
+        fig.setStroke(new java.awt.BasicStroke(2.0f));
         line.figure = fig;
         addFigure(fig);
     }
 
     private void updateOBLines(long currentTime) {
         int extendType = getSettings().getInteger(OB_EXTEND_TYPE, OB_EXTEND_LATEST);
-
         for (int i = 0; i < obLines.size(); i++) {
             OBLine line = obLines.get(i);
             if (!line.valid) continue;
-
-            boolean shouldExtend = (extendType == OB_EXTEND_ALL) ||
-                (extendType == OB_EXTEND_LATEST && i == obLines.size() - 1);
-
+            boolean shouldExtend = (extendType == OB_EXTEND_ALL) || (extendType == OB_EXTEND_LATEST && i == obLines.size() - 1);
             if (line.figure != null && shouldExtend) {
                 line.endTime = currentTime;
                 line.figure.setEnd(currentTime, line.price);
-            }
-        }
-    }
-
-    private void invalidateOBLine(boolean isBullish) {
-        for (int i = obLines.size() - 1; i >= 0; i--) {
-            OBLine line = obLines.get(i);
-            if (line.isBullish == isBullish && line.valid) {
-                line.valid = false;
-                if (line.figure != null) {
-                    removeFigure(line.figure);
-                }
-                debug("OB Line invalidated at price " + line.price);
-                break;
             }
         }
     }
@@ -932,8 +883,6 @@ public class MTFMAModelStrategy extends Study {
         eodProcessed = false;
         resetTradeState();
     }
-
-    // ==================== Inner Classes ====================
 
     private static class OBLine {
         double price;
