@@ -1,13 +1,15 @@
-# MTF MA Model Study
+# MTF MA Model Strategy
 
-A multi-timeframe moving average trend filter with pivot-confirmed entries and automatic order block visualization.
+A multi-timeframe moving average trend filter with pivot-confirmed entries, automatic order block visualization, and **auto-trading capability**.
+
+> **Note:** Available as both an indicator (MTF MA Model) and an auto-trading strategy (MTF MA Model Strategy).
 
 ---
 
 ## Strategy Overview
 
-**Type:** Trend Following Indicator
-**Direction:** Long and Short signals
+**Type:** Trend Following Strategy (Auto-Trading)
+**Direction:** Long and Short
 **Best Timeframe:** 5-minute, 15-minute
 **Best Markets:** All futures, Forex, Crypto
 **Timezone:** Any (no session filtering)
@@ -227,9 +229,49 @@ The indicator uses a state machine with 5 states:
 
 ---
 
+## Auto-Trading Features (Strategy Version)
+
+The **MTF MA Model Strategy** includes full auto-trading capabilities:
+
+### Trade Execution
+- Automatic entry on CONFIRMED_LONG/CONFIRMED_SHORT signals
+- Closes opposite position before reversing
+- Respects max trades per day limit
+
+### Stop Loss Management
+| Mode | Description |
+|------|-------------|
+| Tracking Extreme | Stop at lowest low (long) or highest high (short) since pending |
+| Fixed Points | Fixed distance from entry |
+| Signal Bar | Stop at signal bar's low/high |
+
+### Take Profit Modes
+| Mode | Description |
+|------|-------------|
+| R:R Multiple | Target = Risk × R:R ratio (default 2:1) |
+| Fixed Points | Fixed profit target in points |
+
+### EOD Flattening
+- Automatically closes all positions at configured time (default 3:55 PM)
+- Prevents overnight exposure
+- Resets daily trade counter
+
+### Trade Settings Tab
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Contracts | 1 | Position size |
+| Max Trades/Day | 2 | Daily trade limit |
+| Stop Buffer | 1.0 | Buffer beyond stop level |
+| Fixed Stop Distance | 10.0 | Points for fixed stop |
+| R:R Multiple | 2.0 | Risk:Reward ratio |
+| EOD Time | 1555 | Flatten time (3:55 PM) |
+
+---
+
 ## Note on Multi-Timeframe Implementation
 
-This study uses period scaling to approximate HTF behavior on the chart timeframe. While true MTF data would be ideal, this approach provides:
+This strategy uses period scaling to approximate HTF behavior on the chart timeframe. While true MTF data would be ideal, this approach provides:
 
 - Similar smoothing characteristics
 - No data gaps or synchronization issues
