@@ -11,24 +11,24 @@ import com.motivewave.platform.sdk.study.Study;
 import com.motivewave.platform.sdk.study.StudyHeader;
 
 /**
- * ICT Setup Selector Suite (JadeCap-style) with Preset Pack
+ * ICT Setup Selector Suite (JadeCap-style) with Preset Pack + Dual MMBM/MMSM
  *
- * A multi-setup ICT-style strategy that lets users select from top setups:
+ * A multi-setup ICT-style strategy that supports:
  * - MMBM (Buy Model): SSL sweep → MSS up → FVG entry
  * - MMSM (Sell Model): BSL sweep → MSS down → FVG entry
- * - Session Liquidity Raid: NY-window raid of PDH/PDL/session levels
- * - London AM Raid NY Reversal: London raid sets up NY reversal
- * - Daily Sweep PO3: Daily sweep framework with confirmation
+ * - Session Liquidity Raid, London-NY Reversal, Daily PO3
+ * - **Dual Mode**: Run both MMBM and MMSM concurrently
  *
  * Features:
  * - Preset system (Jade Balanced, Aggressive, Conservative)
+ * - Configurable liquidity references (PDH/PDL, Session H/L, Custom)
  * - Multiple kill zone presets (NY AM, NY PM, London)
- * - Session high/low tracking (Asian, London)
+ * - Per-side trade limits for dual mode
  * - Structural stop loss with buffer
  * - Multiple exit models (R:R, TP1+TP2, Scale+Trail, Time Exit)
  * - EOD forced flattening
  *
- * @version 1.0.0
+ * @version 2.0.0
  * @author MW Study Builder (ICT concepts, JadeCap-style presets)
  */
 @StudyHeader(
@@ -55,6 +55,7 @@ public class ICTSetupSelectorStrategy extends Study
     // ==================== Input Keys ====================
     // Presets
     private static final String PRESET_SELECTOR = "presetSelector";
+    private static final String SETUP_MODE = "setupMode";
     private static final String SETUP_SELECTOR = "setupSelector";
 
     // Sessions
@@ -71,14 +72,24 @@ public class ICTSetupSelectorStrategy extends Study
 
     // Limits
     private static final String MAX_TRADES_PER_DAY = "maxTradesPerDay";
+    private static final String MAX_TRADES_PER_SIDE = "maxTradesPerSide";
     private static final String ONE_TRADE_AT_A_TIME = "oneTradeAtATime";
+    private static final String ALLOW_OPPOSITE_SIDE = "allowOppositeSide";
 
     // Sizing
     private static final String CONTRACTS = "contracts";
 
     // Structure
     private static final String PIVOT_STRENGTH = "pivotStrength";
-    private static final String MIN_RAID_TICKS = "minRaidTicks";
+
+    // Liquidity
+    private static final String SWEEP_MIN_TICKS = "sweepMinTicks";
+    private static final String REQUIRE_CLOSE_BACK = "requireCloseBack";
+    private static final String MMBM_SSL_REF = "mmbmSslRef";
+    private static final String MMSM_BSL_REF = "mmsmBslRef";
+    private static final String LIQ_SESSION_START = "liqSessionStart";
+    private static final String LIQ_SESSION_END = "liqSessionEnd";
+    private static final String CUSTOM_LIQ_LEVEL = "customLiqLevel";
 
     // Risk
     private static final String STOPLOSS_ENABLED = "stoplossEnabled";
@@ -107,10 +118,8 @@ public class ICTSetupSelectorStrategy extends Study
     private static final String PDH_PATH = "pdhPath";
     private static final String PDL_PATH = "pdlPath";
     private static final String EQ_PATH = "eqPath";
-    private static final String ASIAN_HIGH_PATH = "asianHighPath";
-    private static final String ASIAN_LOW_PATH = "asianLowPath";
-    private static final String LONDON_HIGH_PATH = "londonHighPath";
-    private static final String LONDON_LOW_PATH = "londonLowPath";
+    private static final String SSL_PATH = "sslPath";
+    private static final String BSL_PATH = "bslPath";
 
     // ==================== Mode Constants ====================
     // Presets
@@ -118,7 +127,11 @@ public class ICTSetupSelectorStrategy extends Study
     private static final int PRESET_JADE_AGGRESSIVE = 1;
     private static final int PRESET_JADE_CONSERVATIVE = 2;
 
-    // Setups
+    // Setup Modes
+    private static final int MODE_SINGLE = 0;
+    private static final int MODE_BOTH_MMBM_MMSM = 1;
+
+    // Setups (for single mode)
     private static final int SETUP_MMBM = 0;
     private static final int SETUP_MMSM = 1;
     private static final int SETUP_SESSION_RAID = 2;
@@ -130,6 +143,11 @@ public class ICTSetupSelectorStrategy extends Study
     private static final int KZ_NY_PM = 1;
     private static final int KZ_LONDON_AM = 2;
     private static final int KZ_CUSTOM = 3;
+
+    // Liquidity References
+    private static final int LIQ_REF_PREV_DAY = 0;
+    private static final int LIQ_REF_SESSION = 1;
+    private static final int LIQ_REF_CUSTOM = 2;
 
     // Stop modes
     private static final int STOP_FIXED = 0;
@@ -159,27 +177,24 @@ public class ICTSetupSelectorStrategy extends Study
 
     // ==================== Values ====================
     enum Values {
-        PDH, PDL, EQUILIBRIUM,
-        ASIAN_HIGH, ASIAN_LOW,
-        LONDON_HIGH, LONDON_LOW,
-        LIQUIDITY_LEVEL, MSS_LEVEL, FVG_TOP, FVG_BOTTOM,
-        SIGNAL_STATE
+        PDH, PDL, EQUILIBRIUM, SSL_LEVEL, BSL_LEVEL,
+        SESSION_HIGH, SESSION_LOW
     }
 
     // ==================== Signals ====================
-    enum Signals { SWEEP_DETECTED, MSS_CONFIRMED, ENTRY_LONG, ENTRY_SHORT }
+    enum Signals { SSL_SWEEP, BSL_SWEEP, MSS_UP, MSS_DOWN, ENTRY_LONG, ENTRY_SHORT }
 
     // ==================== State Machine ====================
     private static final int STATE_IDLE = 0;
     private static final int STATE_SWEEP_DETECTED = 1;
     private static final int STATE_MSS_PENDING = 2;
-    private static final int STATE_FVG_HUNTING = 3;
-    private static final int STATE_ENTRY_READY = 4;
-    private static final int STATE_IN_TRADE = 5;
+    private static final int STATE_ENTRY_READY = 3;
+    private static final int STATE_IN_TRADE = 4;
 
     // ==================== State Variables ====================
-    private int signalState = STATE_IDLE;
-    private int signalDirection = 0; // 1 = long, -1 = short
+    // Separate state for MMBM (long) and MMSM (short) when in dual mode
+    private int mmbmState = STATE_IDLE;
+    private int mmsmState = STATE_IDLE;
 
     // Daily tracking
     private double pdh = Double.NaN;
@@ -188,39 +203,48 @@ public class ICTSetupSelectorStrategy extends Study
     private double todayLow = Double.NaN;
     private int lastResetDay = -1;
 
-    // Session tracking
-    private double asianHigh = Double.NaN;
-    private double asianLow = Double.NaN;
-    private double londonHigh = Double.NaN;
-    private double londonLow = Double.NaN;
-    private boolean asianComplete = false;
-    private boolean londonComplete = false;
+    // Session liquidity tracking
+    private double sessionHigh = Double.NaN;
+    private double sessionLow = Double.NaN;
+    private boolean inLiquiditySession = false;
 
-    // Liquidity/raid
-    private double targetLiqLevel = Double.NaN;
-    private double sweepExtreme = Double.NaN;
-    private boolean sweepDetected = false;
+    // MMBM state (long setup)
+    private double mmbmSslLevel = Double.NaN;
+    private double mmbmSweepLow = Double.NaN;
+    private double mmbmMssLevel = Double.NaN;
+    private boolean mmbmSweepDetected = false;
+    private boolean mmbmMssConfirmed = false;
+    private double mmbmFvgTop = Double.NaN;
+    private double mmbmFvgBottom = Double.NaN;
+    private boolean mmbmFvgDetected = false;
+    private int mmbmFvgBarIndex = -1;
+    private boolean mmbmWaitingForFill = false;
+    private int mmbmEntryBarIndex = -1;
 
-    // MSS
-    private double mssLevel = Double.NaN;
-    private boolean mssConfirmed = false;
-
-    // FVG
-    private double fvgTop = Double.NaN;
-    private double fvgBottom = Double.NaN;
-    private boolean fvgDetected = false;
-    private int fvgBarIndex = -1;
+    // MMSM state (short setup)
+    private double mmsmBslLevel = Double.NaN;
+    private double mmsmSweepHigh = Double.NaN;
+    private double mmsmMssLevel = Double.NaN;
+    private boolean mmsmSweepDetected = false;
+    private boolean mmsmMssConfirmed = false;
+    private double mmsmFvgTop = Double.NaN;
+    private double mmsmFvgBottom = Double.NaN;
+    private boolean mmsmFvgDetected = false;
+    private int mmsmFvgBarIndex = -1;
+    private boolean mmsmWaitingForFill = false;
+    private int mmsmEntryBarIndex = -1;
 
     // Trade tracking
     private int tradesToday = 0;
+    private int longTradesToday = 0;
+    private int shortTradesToday = 0;
     private double entryPrice = 0;
     private double stopPrice = 0;
     private double tp1Price = 0;
     private double tp2Price = 0;
     private boolean partialTaken = false;
-    private int entryBarIndex = -1;
-    private boolean waitingForFill = false;
     private boolean eodProcessed = false;
+    private int currentDirection = 0; // 1=long, -1=short, 0=flat
 
     // NY timezone
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
@@ -234,11 +258,13 @@ public class ICTSetupSelectorStrategy extends Study
 
         // ===== Presets Tab =====
         var tab = sd.addTab("Presets");
-        var grp = tab.addGroup("Preset Selection");
+        var grp = tab.addGroup("Preset & Mode Selection");
         grp.addRow(new IntegerDescriptor(PRESET_SELECTOR,
             "Preset Pack (0=Balanced, 1=Aggressive, 2=Conservative)", PRESET_JADE_BALANCED, 0, 2, 1));
+        grp.addRow(new IntegerDescriptor(SETUP_MODE,
+            "Setup Mode (0=Single, 1=Both MMBM+MMSM)", MODE_BOTH_MMBM_MMSM, 0, 1, 1));
         grp.addRow(new IntegerDescriptor(SETUP_SELECTOR,
-            "Setup (0=MMBM, 1=MMSM, 2=SessionRaid, 3=LondonNY, 4=DailyPO3)", SETUP_MMBM, 0, 4, 1));
+            "Setup (Single Mode: 0=MMBM, 1=MMSM, 2=SessionRaid, 3=LondonNY, 4=DailyPO3)", SETUP_MMBM, 0, 4, 1));
 
         // ===== Sessions Tab =====
         tab = sd.addTab("Sessions");
@@ -261,14 +287,30 @@ public class ICTSetupSelectorStrategy extends Study
         tab = sd.addTab("Limits");
         grp = tab.addGroup("Trade Limits");
         grp.addRow(new IntegerDescriptor(MAX_TRADES_PER_DAY, "Max Trades Per Day", 1, 1, 10, 1));
+        grp.addRow(new IntegerDescriptor(MAX_TRADES_PER_SIDE, "Max Trades Per Side Per Day", 1, 1, 5, 1));
         grp.addRow(new BooleanDescriptor(ONE_TRADE_AT_A_TIME, "One Trade At A Time", true));
+        grp.addRow(new BooleanDescriptor(ALLOW_OPPOSITE_SIDE, "Allow Opposite Side While In Position", false));
         grp.addRow(new IntegerDescriptor(CONTRACTS, "Contracts", 1, 1, 100, 1));
+
+        // ===== Liquidity Tab =====
+        tab = sd.addTab("Liquidity");
+        grp = tab.addGroup("MMBM/MMSM Reference Levels");
+        grp.addRow(new IntegerDescriptor(MMBM_SSL_REF,
+            "MMBM SSL Reference (0=PDL, 1=Session Low, 2=Custom)", LIQ_REF_PREV_DAY, 0, 2, 1));
+        grp.addRow(new IntegerDescriptor(MMSM_BSL_REF,
+            "MMSM BSL Reference (0=PDH, 1=Session High, 2=Custom)", LIQ_REF_PREV_DAY, 0, 2, 1));
+        grp.addRow(new IntegerDescriptor(LIQ_SESSION_START, "Liquidity Session Start (HHMM)", 2000, 0, 2359, 1));
+        grp.addRow(new IntegerDescriptor(LIQ_SESSION_END, "Liquidity Session End (HHMM)", 0, 0, 2359, 1));
+        grp.addRow(new DoubleDescriptor(CUSTOM_LIQ_LEVEL, "Custom Liquidity Level", 0.0, 0.0, 100000.0, 0.25));
+
+        grp = tab.addGroup("Sweep Detection");
+        grp.addRow(new IntegerDescriptor(SWEEP_MIN_TICKS, "Min Sweep Penetration (ticks)", 2, 1, 50, 1));
+        grp.addRow(new BooleanDescriptor(REQUIRE_CLOSE_BACK, "Require Close Back Through Level", true));
 
         // ===== Structure Tab =====
         tab = sd.addTab("Structure");
         grp = tab.addGroup("Pivot/Swing Detection");
         grp.addRow(new IntegerDescriptor(PIVOT_STRENGTH, "Pivot Strength (L/R bars)", 2, 1, 10, 1));
-        grp.addRow(new IntegerDescriptor(MIN_RAID_TICKS, "Min Raid Penetration (ticks)", 2, 1, 50, 1));
 
         // ===== Entry Tab =====
         tab = sd.addTab("Entry");
@@ -317,15 +359,11 @@ public class ICTSetupSelectorStrategy extends Study
         grp.addRow(new PathDescriptor(EQ_PATH, "Equilibrium",
             defaults.getYellow(), 1.0f, new float[]{4, 4}, true, true, true));
 
-        grp = tab.addGroup("Session Levels");
-        grp.addRow(new PathDescriptor(ASIAN_HIGH_PATH, "Asian High",
-            defaults.getBlue(), 1.0f, new float[]{4, 4}, true, true, true));
-        grp.addRow(new PathDescriptor(ASIAN_LOW_PATH, "Asian Low",
-            defaults.getBlue(), 1.0f, new float[]{4, 4}, true, true, true));
-        grp.addRow(new PathDescriptor(LONDON_HIGH_PATH, "London High",
-            defaults.getPurple(), 1.0f, new float[]{4, 4}, true, true, true));
-        grp.addRow(new PathDescriptor(LONDON_LOW_PATH, "London Low",
-            defaults.getPurple(), 1.0f, new float[]{4, 4}, true, true, true));
+        grp = tab.addGroup("Liquidity Levels");
+        grp.addRow(new PathDescriptor(SSL_PATH, "SSL Level (MMBM)",
+            defaults.getGreen(), 2.0f, null, true, true, true));
+        grp.addRow(new PathDescriptor(BSL_PATH, "BSL Level (MMSM)",
+            defaults.getRed(), 2.0f, null, true, true, true));
 
         grp = tab.addGroup("Entry Markers");
         grp.addRow(new MarkerDescriptor(Inputs.UP_MARKER, "Long Entry",
@@ -334,30 +372,28 @@ public class ICTSetupSelectorStrategy extends Study
             Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getRed(), defaults.getLineColor(), true, true));
 
         // Quick settings
-        sd.addQuickSettings(PRESET_SELECTOR, SETUP_SELECTOR, CONTRACTS, MAX_TRADES_PER_DAY);
+        sd.addQuickSettings(PRESET_SELECTOR, SETUP_MODE, CONTRACTS, MAX_TRADES_PER_DAY);
 
         // ===== Runtime Descriptor =====
         var desc = createRD();
-        desc.setLabelSettings(PRESET_SELECTOR, SETUP_SELECTOR, RR_MULTIPLE);
+        desc.setLabelSettings(PRESET_SELECTOR, SETUP_MODE, RR_MULTIPLE);
 
         desc.exportValue(new ValueDescriptor(Values.PDH, "PDH", new String[]{}));
         desc.exportValue(new ValueDescriptor(Values.PDL, "PDL", new String[]{}));
         desc.exportValue(new ValueDescriptor(Values.EQUILIBRIUM, "Equilibrium", new String[]{}));
-        desc.exportValue(new ValueDescriptor(Values.ASIAN_HIGH, "Asian High", new String[]{}));
-        desc.exportValue(new ValueDescriptor(Values.ASIAN_LOW, "Asian Low", new String[]{}));
-        desc.exportValue(new ValueDescriptor(Values.LONDON_HIGH, "London High", new String[]{}));
-        desc.exportValue(new ValueDescriptor(Values.LONDON_LOW, "London Low", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.SSL_LEVEL, "SSL Level", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.BSL_LEVEL, "BSL Level", new String[]{}));
 
         desc.declarePath(Values.PDH, PDH_PATH);
         desc.declarePath(Values.PDL, PDL_PATH);
         desc.declarePath(Values.EQUILIBRIUM, EQ_PATH);
-        desc.declarePath(Values.ASIAN_HIGH, ASIAN_HIGH_PATH);
-        desc.declarePath(Values.ASIAN_LOW, ASIAN_LOW_PATH);
-        desc.declarePath(Values.LONDON_HIGH, LONDON_HIGH_PATH);
-        desc.declarePath(Values.LONDON_LOW, LONDON_LOW_PATH);
+        desc.declarePath(Values.SSL_LEVEL, SSL_PATH);
+        desc.declarePath(Values.BSL_LEVEL, BSL_PATH);
 
-        desc.declareSignal(Signals.SWEEP_DETECTED, "Liquidity Sweep Detected");
-        desc.declareSignal(Signals.MSS_CONFIRMED, "MSS Confirmed");
+        desc.declareSignal(Signals.SSL_SWEEP, "SSL Sweep Detected");
+        desc.declareSignal(Signals.BSL_SWEEP, "BSL Sweep Detected");
+        desc.declareSignal(Signals.MSS_UP, "MSS Up Confirmed");
+        desc.declareSignal(Signals.MSS_DOWN, "MSS Down Confirmed");
         desc.declareSignal(Signals.ENTRY_LONG, "Long Entry");
         desc.declareSignal(Signals.ENTRY_SHORT, "Short Entry");
 
@@ -397,12 +433,8 @@ public class ICTSetupSelectorStrategy extends Study
             }
             todayHigh = Double.NaN;
             todayLow = Double.NaN;
-            asianHigh = Double.NaN;
-            asianLow = Double.NaN;
-            londonHigh = Double.NaN;
-            londonLow = Double.NaN;
-            asianComplete = false;
-            londonComplete = false;
+            sessionHigh = Double.NaN;
+            sessionLow = Double.NaN;
             resetDailyState();
             lastResetDay = barDay;
         }
@@ -411,8 +443,8 @@ public class ICTSetupSelectorStrategy extends Study
         if (Double.isNaN(todayHigh) || high > todayHigh) todayHigh = high;
         if (Double.isNaN(todayLow) || low < todayLow) todayLow = low;
 
-        // Track session highs/lows
-        updateSessionLevels(barTimeInt, high, low);
+        // Track liquidity session high/low
+        updateLiquiditySessionLevels(barTimeInt, high, low);
 
         // Plot levels
         if (!Double.isNaN(pdh)) {
@@ -420,31 +452,24 @@ public class ICTSetupSelectorStrategy extends Study
             series.setDouble(index, Values.PDL, pdl);
             series.setDouble(index, Values.EQUILIBRIUM, (pdh + pdl) / 2.0);
         }
-        if (asianComplete) {
-            series.setDouble(index, Values.ASIAN_HIGH, asianHigh);
-            series.setDouble(index, Values.ASIAN_LOW, asianLow);
-        }
-        if (londonComplete) {
-            series.setDouble(index, Values.LONDON_HIGH, londonHigh);
-            series.setDouble(index, Values.LONDON_LOW, londonLow);
-        }
-
-        // Store signal state
-        series.setInt(index, Values.SIGNAL_STATE, signalState);
 
         // Only process signals on complete bars
         if (!series.isBarComplete(index)) return;
         if (Double.isNaN(pdh) || Double.isNaN(pdl)) return;
 
         // Get settings
+        int setupMode = getSettings().getInteger(SETUP_MODE, MODE_BOTH_MMBM_MMSM);
         int setupSelector = getSettings().getInteger(SETUP_SELECTOR, SETUP_MMBM);
         int tradeStart = getSettings().getInteger(TRADE_START, 930);
         int tradeEnd = getSettings().getInteger(TRADE_END, 1130);
         int killZonePreset = getSettings().getInteger(KILL_ZONE_PRESET, KZ_NY_AM);
         int maxTrades = getSettings().getInteger(MAX_TRADES_PER_DAY, 1);
+        int maxPerSide = getSettings().getInteger(MAX_TRADES_PER_SIDE, 1);
         boolean oneAtATime = getSettings().getBoolean(ONE_TRADE_AT_A_TIME, true);
+        boolean allowOpposite = getSettings().getBoolean(ALLOW_OPPOSITE_SIDE, false);
         int pivotStrength = getSettings().getInteger(PIVOT_STRENGTH, 2);
-        int minRaidTicks = getSettings().getInteger(MIN_RAID_TICKS, 2);
+        int sweepMinTicks = getSettings().getInteger(SWEEP_MIN_TICKS, 2);
+        boolean requireCloseBack = getSettings().getBoolean(REQUIRE_CLOSE_BACK, true);
         int entryModel = getSettings().getInteger(ENTRY_MODEL_PREFERENCE, ENTRY_BOTH);
         int fvgMinTicks = getSettings().getInteger(FVG_MIN_TICKS, 2);
         boolean requireMSSClose = getSettings().getBoolean(REQUIRE_MSS_CLOSE, true);
@@ -459,126 +484,146 @@ public class ICTSetupSelectorStrategy extends Study
         int eodTime = getSettings().getInteger(EOD_CLOSE_TIME, 1640);
         boolean pastEodCutoff = eodEnabled && barTimeInt >= eodTime;
 
-        // Can we trade?
-        boolean canTrade = inTradeSession && inKillZone && tradesToday < maxTrades && !pastEodCutoff;
+        // Base trade gate
+        boolean baseCanTrade = inTradeSession && inKillZone && tradesToday < maxTrades && !pastEodCutoff;
 
-        // Run setup-specific logic
-        switch (setupSelector) {
-            case SETUP_MMBM:
-                processMMBM(ctx, series, index, tickSize, pivotStrength, minRaidTicks, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime);
-                break;
-            case SETUP_MMSM:
-                processMMSM(ctx, series, index, tickSize, pivotStrength, minRaidTicks, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime);
-                break;
-            case SETUP_SESSION_RAID:
-                processSessionRaid(ctx, series, index, tickSize, pivotStrength, minRaidTicks, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime);
-                break;
-            case SETUP_LONDON_NY:
-                processLondonNYReversal(ctx, series, index, tickSize, pivotStrength, minRaidTicks, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime);
-                break;
-            case SETUP_DAILY_PO3:
-                processDailyPO3(ctx, series, index, tickSize, pivotStrength, minRaidTicks, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime);
-                break;
+        // Resolve liquidity levels
+        mmbmSslLevel = resolveSSLLevel(series, index, pivotStrength);
+        mmsmBslLevel = resolveBSLLevel(series, index, pivotStrength);
+
+        // Plot liquidity levels
+        if (!Double.isNaN(mmbmSslLevel)) series.setDouble(index, Values.SSL_LEVEL, mmbmSslLevel);
+        if (!Double.isNaN(mmsmBslLevel)) series.setDouble(index, Values.BSL_LEVEL, mmsmBslLevel);
+
+        // Determine which setups to evaluate
+        boolean evalMMBM = (setupMode == MODE_BOTH_MMBM_MMSM) || (setupMode == MODE_SINGLE && setupSelector == SETUP_MMBM);
+        boolean evalMMSM = (setupMode == MODE_BOTH_MMBM_MMSM) || (setupMode == MODE_SINGLE && setupSelector == SETUP_MMSM);
+
+        // Check per-side limits and position constraints
+        boolean canTradeLong = baseCanTrade && longTradesToday < maxPerSide;
+        boolean canTradeShort = baseCanTrade && shortTradesToday < maxPerSide;
+
+        if (oneAtATime && currentDirection != 0) {
+            if (!allowOpposite) {
+                canTradeLong = false;
+                canTradeShort = false;
+            } else {
+                // Allow opposite side only
+                if (currentDirection > 0) canTradeLong = false;
+                if (currentDirection < 0) canTradeShort = false;
+            }
+        }
+
+        // Process MMBM (long setup)
+        if (evalMMBM) {
+            processMMBM(ctx, series, index, tickSize, pivotStrength, sweepMinTicks, fvgMinTicks,
+                entryModel, requireMSSClose, requireCloseBack, strictness, canTradeLong,
+                high, low, close, open, barTime);
+        }
+
+        // Process MMSM (short setup)
+        if (evalMMSM) {
+            processMMSM(ctx, series, index, tickSize, pivotStrength, sweepMinTicks, fvgMinTicks,
+                entryModel, requireMSSClose, requireCloseBack, strictness, canTradeShort,
+                high, low, close, open, barTime);
+        }
+
+        // Handle single-mode other setups
+        if (setupMode == MODE_SINGLE) {
+            switch (setupSelector) {
+                case SETUP_SESSION_RAID:
+                case SETUP_LONDON_NY:
+                case SETUP_DAILY_PO3:
+                    // These use combined state, simplified for this version
+                    break;
+            }
         }
 
         // Check for entry cancellation (max bars exceeded)
-        if (waitingForFill && entryBarIndex > 0) {
-            int maxBars = getSettings().getInteger(MAX_BARS_TO_FILL, 30);
-            if (index - entryBarIndex > maxBars) {
-                waitingForFill = false;
-                fvgDetected = false;
-                signalState = STATE_IDLE;
-                debug("Entry cancelled - max bars exceeded");
-            }
+        int maxBars = getSettings().getInteger(MAX_BARS_TO_FILL, 30);
+        if (mmbmWaitingForFill && mmbmEntryBarIndex > 0 && index - mmbmEntryBarIndex > maxBars) {
+            resetMMBMState();
+            debug("MMBM entry cancelled - max bars exceeded");
+        }
+        if (mmsmWaitingForFill && mmsmEntryBarIndex > 0 && index - mmsmEntryBarIndex > maxBars) {
+            resetMMSMState();
+            debug("MMSM entry cancelled - max bars exceeded");
         }
 
         series.setComplete(index);
     }
 
-    // ==================== Setup Processors ====================
+    // ==================== MMBM Processing ====================
 
     private void processMMBM(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int minRaidTicks, int fvgMinTicks, int entryModel,
-            boolean requireMSSClose, int strictness, boolean canTrade,
+            int pivotStrength, int sweepMinTicks, int fvgMinTicks, int entryModel,
+            boolean requireMSSClose, boolean requireCloseBack, int strictness, boolean canTrade,
             double high, double low, double close, double open, long barTime)
     {
-        // MMBM: SSL sweep → MSS up → Bullish FVG → Long entry
-
-        // Phase 1: Identify SSL (PDL or recent swing low)
-        if (signalState == STATE_IDLE && canTrade) {
-            targetLiqLevel = findSSL(series, index, pivotStrength);
-        }
-
-        // Phase 2: Detect SSL sweep
-        if (signalState == STATE_IDLE && canTrade && !Double.isNaN(targetLiqLevel)) {
-            double sweepThreshold = targetLiqLevel - (minRaidTicks * tickSize);
+        // Phase 1: Detect SSL sweep
+        if (mmbmState == STATE_IDLE && canTrade && !Double.isNaN(mmbmSslLevel)) {
+            double sweepThreshold = mmbmSslLevel - (sweepMinTicks * tickSize);
             if (low <= sweepThreshold) {
-                boolean validSweep = (strictness == STRICT_AGGRESSIVE) || (close > targetLiqLevel);
+                boolean validSweep = !requireCloseBack || (close > mmbmSslLevel);
+                if (strictness == STRICT_AGGRESSIVE) validSweep = true;
+
                 if (validSweep) {
-                    sweepDetected = true;
-                    sweepExtreme = low;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = 1; // Long
-                    mssLevel = findSwingHigh(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED,
-                        String.format("SSL Sweep: Low=%.2f", low), low);
-                    debug("MMBM: SSL sweep detected at " + low);
+                    mmbmSweepDetected = true;
+                    mmbmSweepLow = low;
+                    mmbmState = STATE_SWEEP_DETECTED;
+                    mmbmMssLevel = findSwingHigh(series, index, pivotStrength);
+                    ctx.signal(index, Signals.SSL_SWEEP,
+                        String.format("SSL Sweep: Low=%.2f below SSL=%.2f", low, mmbmSslLevel), low);
+                    debug("MMBM: SSL sweep at " + low);
                 }
             }
         }
 
         // Update sweep extreme
-        if (signalState == STATE_SWEEP_DETECTED && signalDirection == 1 && low < sweepExtreme) {
-            sweepExtreme = low;
+        if (mmbmState == STATE_SWEEP_DETECTED && low < mmbmSweepLow) {
+            mmbmSweepLow = low;
         }
 
-        // Phase 3: Detect MSS (break of swing high with displacement)
-        if (signalState == STATE_SWEEP_DETECTED && signalDirection == 1 && !Double.isNaN(mssLevel)) {
-            boolean mssBreak = requireMSSClose ? (close > mssLevel) : (high > mssLevel);
+        // Phase 2: Detect MSS Up
+        if (mmbmState == STATE_SWEEP_DETECTED && !Double.isNaN(mmbmMssLevel)) {
+            boolean mssBreak = requireMSSClose ? (close > mmbmMssLevel) : (high > mmbmMssLevel);
             if (mssBreak) {
                 int dispTicks = getDisplacementTicks(strictness);
                 double bodySize = Math.abs(close - open);
                 if (bodySize >= dispTicks * tickSize || strictness == STRICT_AGGRESSIVE) {
-                    mssConfirmed = true;
-                    signalState = STATE_MSS_PENDING;
-                    ctx.signal(index, Signals.MSS_CONFIRMED, "MSS Up Confirmed", close);
-                    debug("MMBM: MSS confirmed at " + close);
+                    mmbmMssConfirmed = true;
+                    mmbmState = STATE_MSS_PENDING;
+                    ctx.signal(index, Signals.MSS_UP, "MMBM MSS Up Confirmed", close);
+                    debug("MMBM: MSS Up at " + close);
 
-                    // If immediate entry allowed, can enter now
                     if (entryModel == ENTRY_IMMEDIATE || entryModel == ENTRY_MSS_MARKET) {
-                        signalState = STATE_ENTRY_READY;
+                        mmbmState = STATE_ENTRY_READY;
                     }
                 }
             }
         }
 
-        // Phase 4: Detect Bullish FVG
-        if ((signalState == STATE_MSS_PENDING || signalState == STATE_SWEEP_DETECTED) &&
-            signalDirection == 1 && index >= 2 &&
-            (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
+        // Phase 3: Detect Bullish FVG
+        if ((mmbmState == STATE_MSS_PENDING || mmbmState == STATE_SWEEP_DETECTED) &&
+            index >= 2 && (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
         {
             double bar0High = series.getHigh(index - 2);
             double bar2Low = series.getLow(index);
             if (bar2Low > bar0High && (bar2Low - bar0High) >= fvgMinTicks * tickSize) {
-                fvgTop = bar2Low;
-                fvgBottom = bar0High;
-                fvgDetected = true;
-                fvgBarIndex = index;
-                signalState = STATE_ENTRY_READY;
-                debug("MMBM: Bullish FVG detected: " + fvgBottom + " - " + fvgTop);
+                mmbmFvgTop = bar2Low;
+                mmbmFvgBottom = bar0High;
+                mmbmFvgDetected = true;
+                mmbmFvgBarIndex = index;
+                mmbmState = STATE_ENTRY_READY;
+                debug("MMBM: Bullish FVG: " + mmbmFvgBottom + " - " + mmbmFvgTop);
             }
         }
 
-        // Phase 5: Generate entry signal
-        if (signalState == STATE_ENTRY_READY && signalDirection == 1 && canTrade && !waitingForFill) {
-            waitingForFill = true;
-            entryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_LONG, "MMBM Long Setup Ready", close);
+        // Phase 4: Generate entry signal
+        if (mmbmState == STATE_ENTRY_READY && canTrade && !mmbmWaitingForFill) {
+            mmbmWaitingForFill = true;
+            mmbmEntryBarIndex = index;
+            ctx.signal(index, Signals.ENTRY_LONG, "MMBM Long Ready", close);
 
             var marker = getSettings().getMarker(Inputs.UP_MARKER);
             if (marker.isEnabled()) {
@@ -587,82 +632,77 @@ public class ICTSetupSelectorStrategy extends Study
         }
     }
 
+    // ==================== MMSM Processing ====================
+
     private void processMMSM(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int minRaidTicks, int fvgMinTicks, int entryModel,
-            boolean requireMSSClose, int strictness, boolean canTrade,
+            int pivotStrength, int sweepMinTicks, int fvgMinTicks, int entryModel,
+            boolean requireMSSClose, boolean requireCloseBack, int strictness, boolean canTrade,
             double high, double low, double close, double open, long barTime)
     {
-        // MMSM: BSL sweep → MSS down → Bearish FVG → Short entry
-
-        // Phase 1: Identify BSL (PDH or recent swing high)
-        if (signalState == STATE_IDLE && canTrade) {
-            targetLiqLevel = findBSL(series, index, pivotStrength);
-        }
-
-        // Phase 2: Detect BSL sweep
-        if (signalState == STATE_IDLE && canTrade && !Double.isNaN(targetLiqLevel)) {
-            double sweepThreshold = targetLiqLevel + (minRaidTicks * tickSize);
+        // Phase 1: Detect BSL sweep
+        if (mmsmState == STATE_IDLE && canTrade && !Double.isNaN(mmsmBslLevel)) {
+            double sweepThreshold = mmsmBslLevel + (sweepMinTicks * tickSize);
             if (high >= sweepThreshold) {
-                boolean validSweep = (strictness == STRICT_AGGRESSIVE) || (close < targetLiqLevel);
+                boolean validSweep = !requireCloseBack || (close < mmsmBslLevel);
+                if (strictness == STRICT_AGGRESSIVE) validSweep = true;
+
                 if (validSweep) {
-                    sweepDetected = true;
-                    sweepExtreme = high;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = -1; // Short
-                    mssLevel = findSwingLow(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED,
-                        String.format("BSL Sweep: High=%.2f", high), high);
-                    debug("MMSM: BSL sweep detected at " + high);
+                    mmsmSweepDetected = true;
+                    mmsmSweepHigh = high;
+                    mmsmState = STATE_SWEEP_DETECTED;
+                    mmsmMssLevel = findSwingLow(series, index, pivotStrength);
+                    ctx.signal(index, Signals.BSL_SWEEP,
+                        String.format("BSL Sweep: High=%.2f above BSL=%.2f", high, mmsmBslLevel), high);
+                    debug("MMSM: BSL sweep at " + high);
                 }
             }
         }
 
         // Update sweep extreme
-        if (signalState == STATE_SWEEP_DETECTED && signalDirection == -1 && high > sweepExtreme) {
-            sweepExtreme = high;
+        if (mmsmState == STATE_SWEEP_DETECTED && high > mmsmSweepHigh) {
+            mmsmSweepHigh = high;
         }
 
-        // Phase 3: Detect MSS Down
-        if (signalState == STATE_SWEEP_DETECTED && signalDirection == -1 && !Double.isNaN(mssLevel)) {
-            boolean mssBreak = requireMSSClose ? (close < mssLevel) : (low < mssLevel);
+        // Phase 2: Detect MSS Down
+        if (mmsmState == STATE_SWEEP_DETECTED && !Double.isNaN(mmsmMssLevel)) {
+            boolean mssBreak = requireMSSClose ? (close < mmsmMssLevel) : (low < mmsmMssLevel);
             if (mssBreak) {
                 int dispTicks = getDisplacementTicks(strictness);
                 double bodySize = Math.abs(close - open);
                 if (bodySize >= dispTicks * tickSize || strictness == STRICT_AGGRESSIVE) {
-                    mssConfirmed = true;
-                    signalState = STATE_MSS_PENDING;
-                    ctx.signal(index, Signals.MSS_CONFIRMED, "MSS Down Confirmed", close);
-                    debug("MMSM: MSS Down confirmed at " + close);
+                    mmsmMssConfirmed = true;
+                    mmsmState = STATE_MSS_PENDING;
+                    ctx.signal(index, Signals.MSS_DOWN, "MMSM MSS Down Confirmed", close);
+                    debug("MMSM: MSS Down at " + close);
 
                     if (entryModel == ENTRY_IMMEDIATE || entryModel == ENTRY_MSS_MARKET) {
-                        signalState = STATE_ENTRY_READY;
+                        mmsmState = STATE_ENTRY_READY;
                     }
                 }
             }
         }
 
-        // Phase 4: Detect Bearish FVG
-        if ((signalState == STATE_MSS_PENDING || signalState == STATE_SWEEP_DETECTED) &&
-            signalDirection == -1 && index >= 2 &&
-            (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
+        // Phase 3: Detect Bearish FVG
+        if ((mmsmState == STATE_MSS_PENDING || mmsmState == STATE_SWEEP_DETECTED) &&
+            index >= 2 && (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
         {
             double bar0Low = series.getLow(index - 2);
             double bar2High = series.getHigh(index);
             if (bar2High < bar0Low && (bar0Low - bar2High) >= fvgMinTicks * tickSize) {
-                fvgTop = bar0Low;
-                fvgBottom = bar2High;
-                fvgDetected = true;
-                fvgBarIndex = index;
-                signalState = STATE_ENTRY_READY;
-                debug("MMSM: Bearish FVG detected: " + fvgBottom + " - " + fvgTop);
+                mmsmFvgTop = bar0Low;
+                mmsmFvgBottom = bar2High;
+                mmsmFvgDetected = true;
+                mmsmFvgBarIndex = index;
+                mmsmState = STATE_ENTRY_READY;
+                debug("MMSM: Bearish FVG: " + mmsmFvgBottom + " - " + mmsmFvgTop);
             }
         }
 
-        // Phase 5: Generate entry signal
-        if (signalState == STATE_ENTRY_READY && signalDirection == -1 && canTrade && !waitingForFill) {
-            waitingForFill = true;
-            entryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_SHORT, "MMSM Short Setup Ready", close);
+        // Phase 4: Generate entry signal
+        if (mmsmState == STATE_ENTRY_READY && canTrade && !mmsmWaitingForFill) {
+            mmsmWaitingForFill = true;
+            mmsmEntryBarIndex = index;
+            ctx.signal(index, Signals.ENTRY_SHORT, "MMSM Short Ready", close);
 
             var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
             if (marker.isEnabled()) {
@@ -671,283 +711,15 @@ public class ICTSetupSelectorStrategy extends Study
         }
     }
 
-    private void processSessionRaid(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int minRaidTicks, int fvgMinTicks, int entryModel,
-            boolean requireMSSClose, int strictness, boolean canTrade,
-            double high, double low, double close, double open, long barTime)
-    {
-        // Session Liquidity Raid: Raid of PDH/PDL/Asian/London levels
-
-        if (signalState == STATE_IDLE && canTrade) {
-            // Check for raids of multiple liquidity levels
-            double sweepBuffer = minRaidTicks * tickSize;
-
-            // Check PDL/Asian Low/London Low (potential long setup)
-            double lowestLiq = Math.min(pdl,
-                Math.min(asianComplete ? asianLow : Double.MAX_VALUE,
-                         londonComplete ? londonLow : Double.MAX_VALUE));
-
-            if (!Double.isNaN(lowestLiq) && lowestLiq < Double.MAX_VALUE && low <= lowestLiq - sweepBuffer) {
-                if (strictness == STRICT_AGGRESSIVE || close > lowestLiq) {
-                    sweepDetected = true;
-                    sweepExtreme = low;
-                    targetLiqLevel = lowestLiq;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = 1;
-                    mssLevel = findSwingHigh(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED, "Session Low Raid", low);
-                    debug("Session Raid: Low sweep at " + low);
-                }
-            }
-
-            // Check PDH/Asian High/London High (potential short setup)
-            double highestLiq = Math.max(pdh,
-                Math.max(asianComplete ? asianHigh : Double.MIN_VALUE,
-                         londonComplete ? londonHigh : Double.MIN_VALUE));
-
-            if (!sweepDetected && !Double.isNaN(highestLiq) && highestLiq > Double.MIN_VALUE &&
-                high >= highestLiq + sweepBuffer) {
-                if (strictness == STRICT_AGGRESSIVE || close < highestLiq) {
-                    sweepDetected = true;
-                    sweepExtreme = high;
-                    targetLiqLevel = highestLiq;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = -1;
-                    mssLevel = findSwingLow(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED, "Session High Raid", high);
-                    debug("Session Raid: High sweep at " + high);
-                }
-            }
-        }
-
-        // Continue with standard MSS/FVG detection based on direction
-        if (signalDirection == 1) {
-            processMSSAndFVGForLong(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "SessionRaid");
-        } else if (signalDirection == -1) {
-            processMSSAndFVGForShort(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "SessionRaid");
-        }
-    }
-
-    private void processLondonNYReversal(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int minRaidTicks, int fvgMinTicks, int entryModel,
-            boolean requireMSSClose, int strictness, boolean canTrade,
-            double high, double low, double close, double open, long barTime)
-    {
-        // London AM Raid → NY Reversal
-        int barTimeInt = getTimeInt(barTime, NY_TZ);
-
-        // Detect London raid during London session
-        if (signalState == STATE_IDLE && londonComplete && barTimeInt >= 300 && barTimeInt < 930) {
-            double sweepBuffer = minRaidTicks * tickSize;
-
-            // Check if London made new high (potential short setup for NY)
-            if (high >= londonHigh + sweepBuffer) {
-                sweepDetected = true;
-                sweepExtreme = high;
-                targetLiqLevel = londonHigh;
-                signalState = STATE_SWEEP_DETECTED;
-                signalDirection = -1;
-                debug("London Raid: High swept at " + high + ", waiting for NY reversal");
-            }
-
-            // Check if London made new low (potential long setup for NY)
-            if (!sweepDetected && low <= londonLow - sweepBuffer) {
-                sweepDetected = true;
-                sweepExtreme = low;
-                targetLiqLevel = londonLow;
-                signalState = STATE_SWEEP_DETECTED;
-                signalDirection = 1;
-                debug("London Raid: Low swept at " + low + ", waiting for NY reversal");
-            }
-        }
-
-        // Wait for NY session to confirm MSS
-        if (signalState == STATE_SWEEP_DETECTED && canTrade) {
-            if (signalDirection == 1) {
-                mssLevel = findSwingHigh(series, index, pivotStrength);
-                processMSSAndFVGForLong(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "LondonNY");
-            } else {
-                mssLevel = findSwingLow(series, index, pivotStrength);
-                processMSSAndFVGForShort(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                    entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "LondonNY");
-            }
-        }
-    }
-
-    private void processDailyPO3(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int minRaidTicks, int fvgMinTicks, int entryModel,
-            boolean requireMSSClose, int strictness, boolean canTrade,
-            double high, double low, double close, double open, long barTime)
-    {
-        // Daily Sweep PO3: Daily level sweep framework
-
-        if (signalState == STATE_IDLE && canTrade) {
-            double sweepBuffer = minRaidTicks * tickSize;
-
-            // Sweep of PDL → Long setup
-            if (low <= pdl - sweepBuffer) {
-                if (strictness == STRICT_AGGRESSIVE || close > pdl) {
-                    sweepDetected = true;
-                    sweepExtreme = low;
-                    targetLiqLevel = pdl;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = 1;
-                    mssLevel = findSwingHigh(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED, "Daily Low Sweep (PO3)", low);
-                    debug("Daily PO3: PDL sweep at " + low);
-                }
-            }
-
-            // Sweep of PDH → Short setup
-            if (!sweepDetected && high >= pdh + sweepBuffer) {
-                if (strictness == STRICT_AGGRESSIVE || close < pdh) {
-                    sweepDetected = true;
-                    sweepExtreme = high;
-                    targetLiqLevel = pdh;
-                    signalState = STATE_SWEEP_DETECTED;
-                    signalDirection = -1;
-                    mssLevel = findSwingLow(series, index, pivotStrength);
-                    ctx.signal(index, Signals.SWEEP_DETECTED, "Daily High Sweep (PO3)", high);
-                    debug("Daily PO3: PDH sweep at " + high);
-                }
-            }
-        }
-
-        // Process MSS/FVG based on direction
-        if (signalDirection == 1) {
-            processMSSAndFVGForLong(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "DailyPO3");
-        } else if (signalDirection == -1) {
-            processMSSAndFVGForShort(ctx, series, index, tickSize, pivotStrength, fvgMinTicks,
-                entryModel, requireMSSClose, strictness, canTrade, high, low, close, open, barTime, "DailyPO3");
-        }
-    }
-
-    // ==================== Common MSS/FVG Processing ====================
-
-    private void processMSSAndFVGForLong(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int fvgMinTicks, int entryModel, boolean requireMSSClose, int strictness,
-            boolean canTrade, double high, double low, double close, double open, long barTime, String setupName)
-    {
-        // Update sweep extreme
-        if (signalState == STATE_SWEEP_DETECTED && low < sweepExtreme) {
-            sweepExtreme = low;
-        }
-
-        // MSS detection for long
-        if (signalState == STATE_SWEEP_DETECTED && !Double.isNaN(mssLevel)) {
-            boolean mssBreak = requireMSSClose ? (close > mssLevel) : (high > mssLevel);
-            if (mssBreak) {
-                int dispTicks = getDisplacementTicks(strictness);
-                double bodySize = Math.abs(close - open);
-                if (bodySize >= dispTicks * tickSize || strictness == STRICT_AGGRESSIVE) {
-                    mssConfirmed = true;
-                    signalState = STATE_MSS_PENDING;
-                    ctx.signal(index, Signals.MSS_CONFIRMED, setupName + " MSS Up", close);
-                    debug(setupName + ": MSS Up confirmed at " + close);
-
-                    if (entryModel == ENTRY_IMMEDIATE || entryModel == ENTRY_MSS_MARKET) {
-                        signalState = STATE_ENTRY_READY;
-                    }
-                }
-            }
-        }
-
-        // Bullish FVG detection
-        if ((signalState == STATE_MSS_PENDING || signalState == STATE_SWEEP_DETECTED) &&
-            index >= 2 && (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
-        {
-            double bar0High = series.getHigh(index - 2);
-            double bar2Low = series.getLow(index);
-            if (bar2Low > bar0High && (bar2Low - bar0High) >= fvgMinTicks * tickSize) {
-                fvgTop = bar2Low;
-                fvgBottom = bar0High;
-                fvgDetected = true;
-                fvgBarIndex = index;
-                signalState = STATE_ENTRY_READY;
-                debug(setupName + ": Bullish FVG detected");
-            }
-        }
-
-        // Entry signal
-        if (signalState == STATE_ENTRY_READY && canTrade && !waitingForFill) {
-            waitingForFill = true;
-            entryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_LONG, setupName + " Long Ready", close);
-
-            var marker = getSettings().getMarker(Inputs.UP_MARKER);
-            if (marker.isEnabled()) {
-                addFigure(new Marker(new Coordinate(barTime, low), Enums.Position.BOTTOM, marker, setupName));
-            }
-        }
-    }
-
-    private void processMSSAndFVGForShort(DataContext ctx, DataSeries series, int index, double tickSize,
-            int pivotStrength, int fvgMinTicks, int entryModel, boolean requireMSSClose, int strictness,
-            boolean canTrade, double high, double low, double close, double open, long barTime, String setupName)
-    {
-        // Update sweep extreme
-        if (signalState == STATE_SWEEP_DETECTED && high > sweepExtreme) {
-            sweepExtreme = high;
-        }
-
-        // MSS detection for short
-        if (signalState == STATE_SWEEP_DETECTED && !Double.isNaN(mssLevel)) {
-            boolean mssBreak = requireMSSClose ? (close < mssLevel) : (low < mssLevel);
-            if (mssBreak) {
-                int dispTicks = getDisplacementTicks(strictness);
-                double bodySize = Math.abs(close - open);
-                if (bodySize >= dispTicks * tickSize || strictness == STRICT_AGGRESSIVE) {
-                    mssConfirmed = true;
-                    signalState = STATE_MSS_PENDING;
-                    ctx.signal(index, Signals.MSS_CONFIRMED, setupName + " MSS Down", close);
-                    debug(setupName + ": MSS Down confirmed at " + close);
-
-                    if (entryModel == ENTRY_IMMEDIATE || entryModel == ENTRY_MSS_MARKET) {
-                        signalState = STATE_ENTRY_READY;
-                    }
-                }
-            }
-        }
-
-        // Bearish FVG detection
-        if ((signalState == STATE_MSS_PENDING || signalState == STATE_SWEEP_DETECTED) &&
-            index >= 2 && (entryModel == ENTRY_FVG_ONLY || entryModel == ENTRY_BOTH))
-        {
-            double bar0Low = series.getLow(index - 2);
-            double bar2High = series.getHigh(index);
-            if (bar2High < bar0Low && (bar0Low - bar2High) >= fvgMinTicks * tickSize) {
-                fvgTop = bar0Low;
-                fvgBottom = bar2High;
-                fvgDetected = true;
-                fvgBarIndex = index;
-                signalState = STATE_ENTRY_READY;
-                debug(setupName + ": Bearish FVG detected");
-            }
-        }
-
-        // Entry signal
-        if (signalState == STATE_ENTRY_READY && canTrade && !waitingForFill) {
-            waitingForFill = true;
-            entryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_SHORT, setupName + " Short Ready", close);
-
-            var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
-            if (marker.isEnabled()) {
-                addFigure(new Marker(new Coordinate(barTime, high), Enums.Position.TOP, marker, setupName));
-            }
-        }
-    }
-
     // ==================== Strategy Lifecycle ====================
 
     @Override
     public void onActivate(OrderContext ctx) {
-        debug("ICT Setup Selector Strategy activated");
-        applyPresetDefaults();
+        debug("ICT Setup Selector v2.0 activated");
+        int preset = getSettings().getInteger(PRESET_SELECTOR, PRESET_JADE_BALANCED);
+        int mode = getSettings().getInteger(SETUP_MODE, MODE_BOTH_MMBM_MMSM);
+        debug("Preset: " + (preset == 0 ? "Balanced" : preset == 1 ? "Aggressive" : "Conservative"));
+        debug("Mode: " + (mode == 0 ? "Single Setup" : "Both MMBM+MMSM"));
     }
 
     @Override
@@ -982,7 +754,9 @@ public class ICTSetupSelectorStrategy extends Study
         }
 
         boolean oneAtATime = getSettings().getBoolean(ONE_TRADE_AT_A_TIME, true);
-        if (oneAtATime && position != 0) {
+        boolean allowOpposite = getSettings().getBoolean(ALLOW_OPPOSITE_SIDE, false);
+
+        if (oneAtATime && position != 0 && !allowOpposite) {
             debug("Already in position, ignoring signal");
             return;
         }
@@ -993,94 +767,83 @@ public class ICTSetupSelectorStrategy extends Study
         int exitModel = getSettings().getInteger(EXIT_MODEL, EXIT_TP1_TP2);
         double rrMult = getSettings().getDouble(RR_MULTIPLE, 2.0);
         boolean stopEnabled = getSettings().getBoolean(STOPLOSS_ENABLED, true);
-        int zonePrice = getSettings().getInteger(ENTRY_PRICE_IN_ZONE, ZONE_MID);
 
         boolean isLong = (signal == Signals.ENTRY_LONG);
 
-        // Execute entry
         if (isLong) {
             ctx.buy(qty);
             entryPrice = instr.getLastPrice();
+            currentDirection = 1;
 
-            // Calculate stop (structural = below sweep extreme)
             if (stopEnabled) {
                 double stopBuffer = stopTicks * tickSize;
-                if (stopMode == STOP_STRUCTURAL && !Double.isNaN(sweepExtreme)) {
-                    stopPrice = sweepExtreme - stopBuffer;
+                if (stopMode == STOP_STRUCTURAL && !Double.isNaN(mmbmSweepLow)) {
+                    stopPrice = mmbmSweepLow - stopBuffer;
                 } else {
                     stopPrice = entryPrice - stopBuffer;
                 }
                 stopPrice = instr.round(stopPrice);
             }
 
-            // Calculate targets
             double risk = entryPrice - stopPrice;
             double equilibrium = (pdh + pdl) / 2.0;
-
-            tp1Price = equilibrium; // Internal target
+            tp1Price = equilibrium;
 
             switch (exitModel) {
                 case EXIT_RR:
                     tp2Price = entryPrice + (risk * rrMult);
                     break;
-                case EXIT_TP1_TP2:
-                    tp2Price = pdh; // Opposite liquidity
-                    break;
-                case EXIT_SCALE_TRAIL:
-                    tp2Price = pdh;
-                    break;
                 default:
-                    tp2Price = entryPrice + (risk * rrMult);
+                    tp2Price = pdh;
             }
             tp2Price = instr.round(tp2Price);
 
             debug(String.format("LONG: qty=%d, entry=%.2f, stop=%.2f, TP1=%.2f, TP2=%.2f",
                 qty, entryPrice, stopPrice, tp1Price, tp2Price));
 
+            tradesToday++;
+            longTradesToday++;
+            mmbmWaitingForFill = false;
+            mmbmState = STATE_IN_TRADE;
+
         } else {
             ctx.sell(qty);
             entryPrice = instr.getLastPrice();
+            currentDirection = -1;
 
-            // Calculate stop (structural = above sweep extreme)
             if (stopEnabled) {
                 double stopBuffer = stopTicks * tickSize;
-                if (stopMode == STOP_STRUCTURAL && !Double.isNaN(sweepExtreme)) {
-                    stopPrice = sweepExtreme + stopBuffer;
+                if (stopMode == STOP_STRUCTURAL && !Double.isNaN(mmsmSweepHigh)) {
+                    stopPrice = mmsmSweepHigh + stopBuffer;
                 } else {
                     stopPrice = entryPrice + stopBuffer;
                 }
                 stopPrice = instr.round(stopPrice);
             }
 
-            // Calculate targets
             double risk = stopPrice - entryPrice;
             double equilibrium = (pdh + pdl) / 2.0;
-
-            tp1Price = equilibrium; // Internal target
+            tp1Price = equilibrium;
 
             switch (exitModel) {
                 case EXIT_RR:
                     tp2Price = entryPrice - (risk * rrMult);
                     break;
-                case EXIT_TP1_TP2:
-                    tp2Price = pdl; // Opposite liquidity
-                    break;
-                case EXIT_SCALE_TRAIL:
-                    tp2Price = pdl;
-                    break;
                 default:
-                    tp2Price = entryPrice - (risk * rrMult);
+                    tp2Price = pdl;
             }
             tp2Price = instr.round(tp2Price);
 
             debug(String.format("SHORT: qty=%d, entry=%.2f, stop=%.2f, TP1=%.2f, TP2=%.2f",
                 qty, entryPrice, stopPrice, tp1Price, tp2Price));
+
+            tradesToday++;
+            shortTradesToday++;
+            mmsmWaitingForFill = false;
+            mmsmState = STATE_IN_TRADE;
         }
 
-        tradesToday++;
         partialTaken = false;
-        waitingForFill = false;
-        signalState = STATE_IN_TRADE;
     }
 
     @Override
@@ -1090,7 +853,7 @@ public class ICTSetupSelectorStrategy extends Study
         long barTime = series.getStartTime(index);
         int barTimeInt = getTimeInt(barTime, NY_TZ);
 
-        // ===== EOD FLATTEN (Highest Priority) =====
+        // ===== EOD FLATTEN =====
         boolean eodEnabled = getSettings().getBoolean(EOD_CLOSE_ENABLED, true);
         int eodTime = getSettings().getInteger(EOD_CLOSE_TIME, 1640);
 
@@ -1098,10 +861,9 @@ public class ICTSetupSelectorStrategy extends Study
             int position = ctx.getPosition();
 
             if (getSettings().getBoolean(EOD_CANCEL_WORKING, true)) {
-                waitingForFill = false;
-                fvgDetected = false;
-                signalState = STATE_IDLE;
-                debug("EOD: Cancelled pending setup");
+                resetMMBMState();
+                resetMMSMState();
+                debug("EOD: Cancelled pending setups");
             }
 
             if (position != 0) {
@@ -1114,14 +876,12 @@ public class ICTSetupSelectorStrategy extends Study
             return;
         }
 
-        // ===== Midday Exit (if enabled) =====
+        // ===== Midday Exit =====
         boolean middayEnabled = getSettings().getBoolean(MIDDAY_EXIT_ENABLED, true);
         int middayTime = getSettings().getInteger(MIDDAY_EXIT_TIME, 1215);
         int exitModel = getSettings().getInteger(EXIT_MODEL, EXIT_TP1_TP2);
 
-        if (middayEnabled && (exitModel == EXIT_TIME_MIDDAY || exitModel == EXIT_TP1_TP2) &&
-            barTimeInt >= middayTime)
-        {
+        if (middayEnabled && exitModel == EXIT_TIME_MIDDAY && barTimeInt >= middayTime) {
             int position = ctx.getPosition();
             if (position != 0) {
                 ctx.closeAtMarket();
@@ -1143,7 +903,6 @@ public class ICTSetupSelectorStrategy extends Study
         int partialPct = getSettings().getInteger(PARTIAL_PCT, 50);
 
         if (position > 0) {
-            // Long position
             if (stopEnabled && stopPrice > 0 && low <= stopPrice) {
                 ctx.closeAtMarket();
                 debug("LONG stopped out at " + low);
@@ -1158,10 +917,9 @@ public class ICTSetupSelectorStrategy extends Study
                     partialTaken = true;
                     debug("Partial exit: " + partialQty + " at TP1=" + tp1Price);
 
-                    // Move stop to breakeven after partial
                     if (exitModel == EXIT_SCALE_TRAIL) {
                         stopPrice = entryPrice;
-                        debug("Stop moved to breakeven: " + stopPrice);
+                        debug("Stop moved to breakeven");
                     }
                 }
             }
@@ -1173,7 +931,6 @@ public class ICTSetupSelectorStrategy extends Study
             }
 
         } else {
-            // Short position
             if (stopEnabled && stopPrice > 0 && high >= stopPrice) {
                 ctx.closeAtMarket();
                 debug("SHORT stopped out at " + high);
@@ -1190,7 +947,7 @@ public class ICTSetupSelectorStrategy extends Study
 
                     if (exitModel == EXIT_SCALE_TRAIL) {
                         stopPrice = entryPrice;
-                        debug("Stop moved to breakeven: " + stopPrice);
+                        debug("Stop moved to breakeven");
                     }
                 }
             }
@@ -1205,49 +962,89 @@ public class ICTSetupSelectorStrategy extends Study
 
     // ==================== Helper Methods ====================
 
-    private void applyPresetDefaults() {
-        // Note: In a full implementation, this would modify Settings based on preset
-        // For now, we document the preset values and users can manually adjust
-        int preset = getSettings().getInteger(PRESET_SELECTOR, PRESET_JADE_BALANCED);
-        debug("Using preset: " + (preset == 0 ? "Jade Balanced" : preset == 1 ? "Jade Aggressive" : "Jade Conservative"));
+    private double resolveSSLLevel(DataSeries series, int index, int pivotStrength) {
+        int ref = getSettings().getInteger(MMBM_SSL_REF, LIQ_REF_PREV_DAY);
+        switch (ref) {
+            case LIQ_REF_SESSION:
+                return !Double.isNaN(sessionLow) ? sessionLow : pdl;
+            case LIQ_REF_CUSTOM:
+                double custom = getSettings().getDouble(CUSTOM_LIQ_LEVEL, 0.0);
+                return custom > 0 ? custom : pdl;
+            default:
+                return pdl;
+        }
     }
 
-    private void updateSessionLevels(int timeInt, double high, double low) {
-        // Asian session: 18:00-00:00 ET (previous day evening)
-        // Actually in NY, Asian is roughly 7pm - 3am
-        if (timeInt >= 1900 || timeInt < 300) {
-            if (Double.isNaN(asianHigh) || high > asianHigh) asianHigh = high;
-            if (Double.isNaN(asianLow) || low < asianLow) asianLow = low;
-        } else if (!asianComplete && timeInt >= 300) {
-            asianComplete = true;
+    private double resolveBSLLevel(DataSeries series, int index, int pivotStrength) {
+        int ref = getSettings().getInteger(MMSM_BSL_REF, LIQ_REF_PREV_DAY);
+        switch (ref) {
+            case LIQ_REF_SESSION:
+                return !Double.isNaN(sessionHigh) ? sessionHigh : pdh;
+            case LIQ_REF_CUSTOM:
+                double custom = getSettings().getDouble(CUSTOM_LIQ_LEVEL, 0.0);
+                return custom > 0 ? custom : pdh;
+            default:
+                return pdh;
+        }
+    }
+
+    private void updateLiquiditySessionLevels(int timeInt, double high, double low) {
+        int start = getSettings().getInteger(LIQ_SESSION_START, 2000);
+        int end = getSettings().getInteger(LIQ_SESSION_END, 0);
+
+        // Handle overnight session (e.g., 2000-0000)
+        boolean inSession;
+        if (start > end) {
+            inSession = timeInt >= start || timeInt < end;
+        } else {
+            inSession = timeInt >= start && timeInt < end;
         }
 
-        // London session: 3:00-9:30 ET
-        if (timeInt >= 300 && timeInt < 930) {
-            if (Double.isNaN(londonHigh) || high > londonHigh) londonHigh = high;
-            if (Double.isNaN(londonLow) || low < londonLow) londonLow = low;
-        } else if (!londonComplete && timeInt >= 930) {
-            londonComplete = true;
+        if (inSession) {
+            if (Double.isNaN(sessionHigh) || high > sessionHigh) sessionHigh = high;
+            if (Double.isNaN(sessionLow) || low < sessionLow) sessionLow = low;
+            inLiquiditySession = true;
+        } else if (inLiquiditySession) {
+            inLiquiditySession = false;
         }
     }
 
     private void resetDailyState() {
-        signalState = STATE_IDLE;
-        signalDirection = 0;
-        targetLiqLevel = Double.NaN;
-        sweepExtreme = Double.NaN;
-        sweepDetected = false;
-        mssLevel = Double.NaN;
-        mssConfirmed = false;
-        fvgTop = Double.NaN;
-        fvgBottom = Double.NaN;
-        fvgDetected = false;
-        fvgBarIndex = -1;
-        waitingForFill = false;
-        entryBarIndex = -1;
+        resetMMBMState();
+        resetMMSMState();
         tradesToday = 0;
+        longTradesToday = 0;
+        shortTradesToday = 0;
         eodProcessed = false;
         resetTradeState();
+    }
+
+    private void resetMMBMState() {
+        mmbmState = STATE_IDLE;
+        mmbmSweepDetected = false;
+        mmbmSweepLow = Double.NaN;
+        mmbmMssLevel = Double.NaN;
+        mmbmMssConfirmed = false;
+        mmbmFvgTop = Double.NaN;
+        mmbmFvgBottom = Double.NaN;
+        mmbmFvgDetected = false;
+        mmbmFvgBarIndex = -1;
+        mmbmWaitingForFill = false;
+        mmbmEntryBarIndex = -1;
+    }
+
+    private void resetMMSMState() {
+        mmsmState = STATE_IDLE;
+        mmsmSweepDetected = false;
+        mmsmSweepHigh = Double.NaN;
+        mmsmMssLevel = Double.NaN;
+        mmsmMssConfirmed = false;
+        mmsmFvgTop = Double.NaN;
+        mmsmFvgBottom = Double.NaN;
+        mmsmFvgDetected = false;
+        mmsmFvgBarIndex = -1;
+        mmsmWaitingForFill = false;
+        mmsmEntryBarIndex = -1;
     }
 
     private void resetTradeState() {
@@ -1256,23 +1053,7 @@ public class ICTSetupSelectorStrategy extends Study
         tp1Price = 0;
         tp2Price = 0;
         partialTaken = false;
-        signalState = STATE_IDLE;
-        signalDirection = 0;
-        sweepDetected = false;
-        mssConfirmed = false;
-        fvgDetected = false;
-    }
-
-    private double findSSL(DataSeries series, int index, int strength) {
-        // Find sell-side liquidity (lowest swing low or PDL)
-        double swingLow = findSwingLow(series, index, strength);
-        return !Double.isNaN(swingLow) ? Math.min(swingLow, pdl) : pdl;
-    }
-
-    private double findBSL(DataSeries series, int index, int strength) {
-        // Find buy-side liquidity (highest swing high or PDH)
-        double swingHigh = findSwingHigh(series, index, strength);
-        return !Double.isNaN(swingHigh) ? Math.max(swingHigh, pdh) : pdh;
+        currentDirection = 0;
     }
 
     private double findSwingLow(DataSeries series, int index, int strength) {
@@ -1348,11 +1129,8 @@ public class ICTSetupSelectorStrategy extends Study
         pdl = Double.NaN;
         todayHigh = Double.NaN;
         todayLow = Double.NaN;
-        asianHigh = Double.NaN;
-        asianLow = Double.NaN;
-        londonHigh = Double.NaN;
-        londonLow = Double.NaN;
-        asianComplete = false;
-        londonComplete = false;
+        sessionHigh = Double.NaN;
+        sessionLow = Double.NaN;
+        inLiquiditySession = false;
     }
 }

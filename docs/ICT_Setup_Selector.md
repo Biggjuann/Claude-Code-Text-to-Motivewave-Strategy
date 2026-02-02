@@ -1,8 +1,8 @@
-# ICT Setup Selector Suite (JadeCap-style)
+# ICT Setup Selector Suite (JadeCap-style) v2.0
 
-A comprehensive multi-setup ICT strategy with preset pack that lets users select from top ICT-style setups.
+A comprehensive multi-setup ICT strategy with preset pack that supports running both MMBM and MMSM concurrently.
 
-> **Note:** This is an auto-trading strategy with 5 selectable setup modules and 3 preset configurations.
+> **Note:** This is an auto-trading strategy with dual MMBM/MMSM mode, configurable liquidity references, and per-side trade limits.
 
 ---
 
@@ -16,7 +16,15 @@ A comprehensive multi-setup ICT strategy with preset pack that lets users select
 
 ### Core Concept
 
-This strategy provides a unified framework for trading multiple ICT-style setups:
+This strategy provides a unified framework for trading multiple ICT-style setups.
+
+**New in v2.0:**
+- **Dual Mode**: Run MMBM and MMSM concurrently (both long and short setups active)
+- **Configurable Liquidity References**: PDH/PDL, Session High/Low, or Custom level
+- **Per-Side Trade Limits**: Control max trades per direction when running dual mode
+- **Require Close Back**: Optional sweep validation requiring price to close back through level
+
+Setup Modules:
 1. **MMBM** (Market Maker Buy Model): SSL sweep → MSS up → FVG entry
 2. **MMSM** (Market Maker Sell Model): BSL sweep → MSS down → FVG entry
 3. **Session Liquidity Raid**: PDH/PDL/Asian/London level raids
@@ -108,7 +116,20 @@ Daily sweep framework (Power of 3) - identifies daily level sweeps and trades th
 | Setting | Options | Description |
 |---------|---------|-------------|
 | Preset Pack | Balanced, Aggressive, Conservative | Pre-configured settings |
-| Setup | MMBM, MMSM, SessionRaid, LondonNY, DailyPO3 | Which setup module to use |
+| Setup Mode | Single, Both MMBM+MMSM | Run one setup or both long/short |
+| Setup (Single Mode) | MMBM, MMSM, SessionRaid, LondonNY, DailyPO3 | Which setup when in single mode |
+
+### Liquidity Tab (New in v2.0)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| MMBM SSL Reference | PDL | PDL, Session Low, or Custom level |
+| MMSM BSL Reference | PDH | PDH, Session High, or Custom level |
+| Liquidity Session Start | 2000 | Start of session for Session H/L reference |
+| Liquidity Session End | 0000 | End of session for Session H/L reference |
+| Custom Liquidity Level | 0.0 | Manual level when using Custom |
+| Min Sweep Penetration | 2 | Ticks beyond level to count as sweep |
+| Require Close Back | true | Sweep bar must close back through level |
 
 ### Sessions Tab
 
@@ -125,7 +146,9 @@ Daily sweep framework (Power of 3) - identifies daily level sweeps and trades th
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Max Trades/Day | 1 | Daily trade limit |
+| Max Trades/Side | 1 | Per-side limit (for dual mode) |
 | One At A Time | true | Only one position at a time |
+| Allow Opposite Side | false | Allow opposite side while in position |
 | Contracts | 1 | Position size |
 
 ### Structure Tab
