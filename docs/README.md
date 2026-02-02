@@ -39,6 +39,7 @@ Professional trading strategies for MotiveWave platform.
 |----------|-------------|----------------|---------|
 | [ICT MMBM (Buy Model)](./ICT_MMBM.md) | Buy-side model: SSL sweep → MSS → FVG entry | 5-15 min | ES, NQ, Forex |
 | [ICT MMSM (Sell Model)](./ICT_MMSM.md) | Sell-side model: BSL sweep → MSS → FVG entry | 5-15 min | ES, NQ, Forex |
+| [ICT Setup Selector](./ICT_Setup_Selector.md) | Multi-setup suite with JadeCap presets (MMBM, MMSM, Session Raid, London-NY, Daily PO3) | 5-15 min | ES, NQ, Forex |
 
 ### Trend Following
 
