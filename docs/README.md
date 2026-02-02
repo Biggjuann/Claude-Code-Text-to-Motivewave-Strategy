@@ -45,6 +45,7 @@ Professional trading strategies for MotiveWave platform.
 | Strategy | Description | Best Timeframe | Markets |
 |----------|-------------|----------------|---------|
 | [MA Cross Strategy](./MA_Cross_Strategy.md) | Moving average crossover with ATR stops | 15-60 min | All |
+| [MTF MA Model](./MTF_MA_Model.md) | Multi-timeframe MA filter with pivot confirmation and OB visualization | 5-15 min | All |
 
 ---
 
