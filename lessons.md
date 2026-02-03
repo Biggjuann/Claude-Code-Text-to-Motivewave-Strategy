@@ -350,6 +350,246 @@ private static final int LIQ_REF_SESSION = 1;    // Session H/L
 private static final int LIQ_REF_CUSTOM = 2;     // Manual level
 ```
 
+### Draw Liquidity
+
+Liquidity levels price is "drawn to" - targets for price movement:
+
+```java
+private static class LiquidityTarget {
+    double price;
+    String type;  // "SESSION_HIGH", "SWING_LOW", "EQUAL_HIGH", etc.
+    boolean isBullishDraw;  // True = above price, bullish target
+}
+
+// Track multiple target types
+private List<LiquidityTarget> drawTargets = new ArrayList<>();
+
+// Nearest draw target in trade direction
+private LiquidityTarget findNearestDraw(double currentPrice, boolean lookingUp) {
+    return drawTargets.stream()
+        .filter(t -> t.isBullishDraw == lookingUp)
+        .filter(t -> lookingUp ? t.price > currentPrice : t.price < currentPrice)
+        .min(Comparator.comparingDouble(t -> Math.abs(t.price - currentPrice)))
+        .orElse(null);
+}
+```
+
+### Order Block (OB) - Proper Definition
+
+An OB is the last consecutive candle(s) before displacement:
+
+```java
+// Bullish OB: consecutive down-close candles before up displacement
+private Zone detectBullishOB(DataSeries series, int index, int minCandles) {
+    // Find consecutive down candles before current
+    int count = 0;
+    int obEndIdx = -1;
+    for (int i = index - 1; i >= 0 && count < 10; i--) {
+        double open = series.getOpen(i);
+        double close = series.getClose(i);
+        if (close < open) {  // Down close
+            if (obEndIdx < 0) obEndIdx = i;
+            count++;
+        } else {
+            if (count >= minCandles) break;
+            count = 0;
+            obEndIdx = -1;
+        }
+    }
+
+    if (count >= minCandles && obEndIdx >= 0) {
+        int obStartIdx = obEndIdx - count + 1;
+        double obHigh = series.getHigh(obStartIdx);
+        double obLow = series.getLow(obEndIdx);
+
+        // Check if current candle closes through OB high (displacement)
+        if (series.getClose(index) > obHigh) {
+            return new Zone(obHigh, obLow, obStartIdx, true, "OB");
+        }
+    }
+    return null;
+}
+```
+
+**Key point**: OB mean threshold is the midpoint. Price should react BEFORE reaching the mean for a valid OB1 entry.
+
+### Breaker - Two Creation Methods
+
+**Method 1: OB Violation Flip**
+```java
+// Track OB violation status
+zone.violated = false;
+
+// In calculate(): check if price closes through OB
+if (zone.type.equals("OB") && zone.isValid && !zone.violated) {
+    if (zone.isBullish && close < zone.bottom) {
+        zone.violated = true;
+        // Bullish OB violated → Bearish Breaker
+        Zone breaker = new Zone(zone.top, zone.bottom, index, false, "BREAKER");
+        breakers.add(breaker);
+    } else if (!zone.isBullish && close > zone.top) {
+        zone.violated = true;
+        // Bearish OB violated → Bullish Breaker
+        Zone breaker = new Zone(zone.top, zone.bottom, index, true, "BREAKER");
+        breakers.add(breaker);
+    }
+}
+```
+
+**Method 2: Sweep + Displacement (Structure Breaker)**
+```java
+// Bullish structure breaker: sweep low + displacement up
+if (swept != null && !swept.isHigh) {
+    double body = close - open;
+    double range = high - low;
+    double avgRange = getAverageRange(series, index, 14);
+
+    if (body > 0 && range >= avgRange * 1.2) {  // Bullish displacement
+        Zone breaker = new Zone(swept.price, swept.price - buffer, index, true, "BREAKER");
+        breakers.add(breaker);
+    }
+}
+```
+
+### FVG with Consequent Encroachment (CE)
+
+```java
+// Bullish FVG: gap between bar[2].low and bar[0].high
+double gapTop = series.getLow(index);      // Current bar low
+double gapBottom = series.getHigh(index - 2);  // Bar 2 back high
+
+if (gapTop > gapBottom) {
+    double gapSize = gapTop - gapBottom;
+    if (gapSize >= minGapPoints) {
+        Zone fvg = new Zone(gapTop, gapBottom, index - 1, true, "FVG");
+        // CE = midpoint
+        fvg.meanThreshold = (gapTop + gapBottom) / 2.0;
+        fvgs.add(fvg);
+    }
+}
+
+// CE Respect check: price should hold above CE for bullish FVG
+boolean respectsCE = close > fvg.meanThreshold;
+```
+
+### IFVG (Inversion) - FVG Displaced Through
+
+```java
+// IFVG: FVG that price closes through, inverting direction
+private void checkForInversion(Zone fvg, double close, int index) {
+    if (!fvg.isValid || fvg.type.equals("IFVG")) return;
+
+    if (fvg.isBullish) {
+        // Bullish FVG → Bearish IFVG if price closes below bottom
+        if (close < fvg.bottom) {
+            fvg.type = "IFVG";
+            fvg.isBullish = false;  // Flipped!
+            fvg.barIndex = index;
+        }
+    } else {
+        // Bearish FVG → Bullish IFVG if price closes above top
+        if (close > fvg.top) {
+            fvg.type = "IFVG";
+            fvg.isBullish = true;  // Flipped!
+            fvg.barIndex = index;
+        }
+    }
+}
+```
+
+### BPR (Balanced Price Range) - Zone Overlap
+
+```java
+// BPR: overlap between complementary zones
+private Zone detectBPR(Zone zone1, Zone zone2, int index, double minWidth) {
+    // Find overlap
+    double overlapTop = Math.min(zone1.top, zone2.top);
+    double overlapBottom = Math.max(zone1.bottom, zone2.bottom);
+
+    if (overlapTop > overlapBottom) {
+        double width = overlapTop - overlapBottom;
+        if (width >= minWidth) {
+            // BPR inherits direction from the more recent zone
+            boolean isBullish = zone1.barIndex > zone2.barIndex
+                ? zone1.isBullish : zone2.isBullish;
+            return new Zone(overlapTop, overlapBottom, index, isBullish, "BPR");
+        }
+    }
+    return null;
+}
+```
+
+### Unicorn Setup (A+ Grade)
+
+```java
+// Unicorn: Breaker + BPR/FVG confluence with price in overlap
+private boolean checkUnicorn(Zone breaker, List<Zone> fvgs, double close) {
+    if (breaker == null || !breaker.isValid) return false;
+
+    for (Zone fvg : fvgs) {
+        if (!fvg.isValid || fvg.isBullish != breaker.isBullish) continue;
+
+        // Find overlap
+        double overlapTop = Math.min(breaker.top, fvg.top);
+        double overlapBottom = Math.max(breaker.bottom, fvg.bottom);
+
+        if (overlapTop > overlapBottom) {
+            // Check if price is in overlap zone
+            if (close >= overlapBottom && close <= overlapTop) {
+                return true;  // UNICORN DETECTED!
+            }
+        }
+    }
+    return false;
+}
+```
+
+### Entry Model Priority
+
+```java
+// Entry models in priority order
+private static final int MODEL_UN1 = 0;  // Unicorn (A+) - highest priority
+private static final int MODEL_BR1 = 1;  // Breaker Retap
+private static final int MODEL_IF1 = 2;  // IFVG/BPR Flip
+private static final int MODEL_OB1 = 3;  // OB Mean Threshold
+
+private int checkEntryModels(double close, List<Zone> zones) {
+    // Check in priority order - first valid match wins
+    if (enableUnicorn && checkUnicorn(activeBreaker, fvgs, close)) return MODEL_UN1;
+    if (enableBreaker && checkBreakerRetap(breakers, close)) return MODEL_BR1;
+    if (enableIFVG && checkIFVGEntry(ifvgs, close)) return MODEL_IF1;
+    if (enableOB && checkOBEntry(orderBlocks, close)) return MODEL_OB1;
+    return -1;  // No valid model
+}
+```
+
+### Stop Logic with Tight Breaker Override
+
+```java
+private double calculateStop(Zone zone, boolean isLong, double defaultStop,
+                            double minStop, double maxStop, double tightThreshold) {
+    double structureStop;
+
+    if (isLong) {
+        structureStop = zone.bottom - stopBuffer;
+    } else {
+        structureStop = zone.top + stopBuffer;
+    }
+
+    double stopDistance = Math.abs(entryPrice - structureStop);
+
+    // If Breaker zone is too tight (< threshold), use default stop
+    if (zone.type.equals("BREAKER") && stopDistance < tightThreshold) {
+        stopDistance = defaultStop;  // Override to 10-15 pts default
+    }
+
+    // Clamp to min/max
+    stopDistance = Math.max(minStop, Math.min(maxStop, stopDistance));
+
+    return isLong ? entryPrice - stopDistance : entryPrice + stopDistance;
+}
+```
+
 ### Sweep Detection
 
 ```java
@@ -659,4 +899,4 @@ Before deploying a new strategy:
 
 ---
 
-*Last updated: February 2026*
+*Last updated: February 2, 2026*
