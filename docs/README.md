@@ -43,6 +43,12 @@ Professional trading strategies for MotiveWave platform.
 | [Lanto IFVG Continuation](./Lanto_IFVG_Continuation.md) | IFVG continuation with displacement filter, bias model, fixed-R exits | 1 min | NQ, MNQ, ES, MES |
 | [BrianStonk Modular](./BrianStonk_Modular.md) | Modular ORB + IFVG + OB/Breaker with presets, NY PM session | 1 min | NQ, MNQ, ES, MES |
 
+### Adaptive S/R Strategies
+
+| Strategy | Description | Best Timeframe | Markets |
+|----------|-------------|----------------|---------|
+| [Magic Line](./Magic_Line.md) | Regressive S/R line with Support Bounce, Side-Exit, and Table-Top patterns | Any | All Futures |
+
 ### Trend Following
 
 | Strategy | Description | Best Timeframe | Markets |
