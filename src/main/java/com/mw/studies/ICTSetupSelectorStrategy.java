@@ -59,6 +59,7 @@ public class ICTSetupSelectorStrategy extends Study
     private static final String SETUP_SELECTOR = "setupSelector";
 
     // Sessions
+    private static final String TRADE_WINDOW_ALWAYS_ON = "tradeWindowAlwaysOn";
     private static final String TRADE_START = "tradeStart";
     private static final String TRADE_END = "tradeEnd";
     private static final String KILL_ZONE_PRESET = "killZonePreset";
@@ -91,6 +92,14 @@ public class ICTSetupSelectorStrategy extends Study
     private static final String LIQ_SESSION_END = "liqSessionEnd";
     private static final String CUSTOM_LIQ_LEVEL = "customLiqLevel";
 
+    // Deeper Liquidity (Stronger Setups)
+    private static final String MMBM_PWL_ENABLED = "mmbmPwlEnabled";
+    private static final String MMBM_MAJOR_SWING_ENABLED = "mmbmMajorSwingEnabled";
+    private static final String MAJOR_SWING_LOOKBACK = "majorSwingLookback";
+    private static final String REQUIRE_DEEPER_LIQ = "requireDeeperLiq";
+    private static final String MMSM_PWH_ENABLED = "mmsmPwhEnabled";
+    private static final String MMSM_MAJOR_SWING_HIGH_ENABLED = "mmsmMajorSwingHighEnabled";
+
     // Risk
     private static final String STOPLOSS_ENABLED = "stoplossEnabled";
     private static final String STOPLOSS_MODE = "stoplossMode";
@@ -120,6 +129,10 @@ public class ICTSetupSelectorStrategy extends Study
     private static final String EQ_PATH = "eqPath";
     private static final String SSL_PATH = "sslPath";
     private static final String BSL_PATH = "bslPath";
+    private static final String PWL_PATH = "pwlPath";
+    private static final String PWH_PATH = "pwhPath";
+    private static final String MAJOR_SWING_LOW_PATH = "majorSwingLowPath";
+    private static final String MAJOR_SWING_HIGH_PATH = "majorSwingHighPath";
 
     // ==================== Mode Constants ====================
     // Presets
@@ -178,7 +191,8 @@ public class ICTSetupSelectorStrategy extends Study
     // ==================== Values ====================
     enum Values {
         PDH, PDL, EQUILIBRIUM, SSL_LEVEL, BSL_LEVEL,
-        SESSION_HIGH, SESSION_LOW
+        SESSION_HIGH, SESSION_LOW,
+        PWH, PWL, MAJOR_SWING_HIGH, MAJOR_SWING_LOW
     }
 
     // ==================== Signals ====================
@@ -202,6 +216,21 @@ public class ICTSetupSelectorStrategy extends Study
     private double todayHigh = Double.NaN;
     private double todayLow = Double.NaN;
     private int lastResetDay = -1;
+
+    // Weekly tracking (Previous Week High/Low)
+    private double pwh = Double.NaN;
+    private double pwl = Double.NaN;
+    private double thisWeekHigh = Double.NaN;
+    private double thisWeekLow = Double.NaN;
+    private int lastResetWeek = -1;
+
+    // Major swing levels (HTF)
+    private double majorSwingHigh = Double.NaN;
+    private double majorSwingLow = Double.NaN;
+
+    // Sweep strength tracking
+    private int mmbmSweepStrength = 0; // 0=none, 1=PDL, 2=PWL, 3=major swing
+    private int mmsmSweepStrength = 0; // 0=none, 1=PDH, 2=PWH, 3=major swing
 
     // Session liquidity tracking
     private double sessionHigh = Double.NaN;
@@ -269,6 +298,7 @@ public class ICTSetupSelectorStrategy extends Study
         // ===== Sessions Tab =====
         tab = sd.addTab("Sessions");
         grp = tab.addGroup("Trade Window (ET)");
+        grp.addRow(new BooleanDescriptor(TRADE_WINDOW_ALWAYS_ON, "Always On (Ignore Time Filter)", false));
         grp.addRow(new IntegerDescriptor(TRADE_START, "Start Time (HHMM)", 930, 0, 2359, 1));
         grp.addRow(new IntegerDescriptor(TRADE_END, "End Time (HHMM)", 1130, 0, 2359, 1));
 
@@ -302,6 +332,14 @@ public class ICTSetupSelectorStrategy extends Study
         grp.addRow(new IntegerDescriptor(LIQ_SESSION_START, "Liquidity Session Start (HHMM)", 2000, 0, 2359, 1));
         grp.addRow(new IntegerDescriptor(LIQ_SESSION_END, "Liquidity Session End (HHMM)", 0, 0, 2359, 1));
         grp.addRow(new DoubleDescriptor(CUSTOM_LIQ_LEVEL, "Custom Liquidity Level", 0.0, 0.0, 100000.0, 0.25));
+
+        grp = tab.addGroup("Deeper Liquidity (Stronger Setups)");
+        grp.addRow(new BooleanDescriptor(MMBM_PWL_ENABLED, "MMBM: Track Previous Week Low (PWL)", true));
+        grp.addRow(new BooleanDescriptor(MMBM_MAJOR_SWING_ENABLED, "MMBM: Track Major Swing Low (HTF)", true));
+        grp.addRow(new BooleanDescriptor(MMSM_PWH_ENABLED, "MMSM: Track Previous Week High (PWH)", true));
+        grp.addRow(new BooleanDescriptor(MMSM_MAJOR_SWING_HIGH_ENABLED, "MMSM: Track Major Swing High (HTF)", true));
+        grp.addRow(new IntegerDescriptor(MAJOR_SWING_LOOKBACK, "Major Swing Lookback (bars)", 100, 20, 500, 10));
+        grp.addRow(new BooleanDescriptor(REQUIRE_DEEPER_LIQ, "Require Deeper Liquidity for Entry", false));
 
         grp = tab.addGroup("Sweep Detection");
         grp.addRow(new IntegerDescriptor(SWEEP_MIN_TICKS, "Min Sweep Penetration (ticks)", 2, 1, 50, 1));
@@ -365,6 +403,16 @@ public class ICTSetupSelectorStrategy extends Study
         grp.addRow(new PathDescriptor(BSL_PATH, "BSL Level (MMSM)",
             defaults.getRed(), 2.0f, null, true, true, true));
 
+        grp = tab.addGroup("Deeper Liquidity Levels");
+        grp.addRow(new PathDescriptor(PWL_PATH, "Previous Week Low (PWL)",
+            new java.awt.Color(0, 180, 0), 2.0f, new float[]{6, 3}, true, true, true));
+        grp.addRow(new PathDescriptor(PWH_PATH, "Previous Week High (PWH)",
+            new java.awt.Color(180, 0, 0), 2.0f, new float[]{6, 3}, true, true, true));
+        grp.addRow(new PathDescriptor(MAJOR_SWING_LOW_PATH, "Major Swing Low (HTF)",
+            new java.awt.Color(0, 255, 100), 2.5f, new float[]{10, 5}, true, true, true));
+        grp.addRow(new PathDescriptor(MAJOR_SWING_HIGH_PATH, "Major Swing High (HTF)",
+            new java.awt.Color(255, 100, 0), 2.5f, new float[]{10, 5}, true, true, true));
+
         grp = tab.addGroup("Entry Markers");
         grp.addRow(new MarkerDescriptor(Inputs.UP_MARKER, "Long Entry",
             Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getGreen(), defaults.getLineColor(), true, true));
@@ -383,12 +431,20 @@ public class ICTSetupSelectorStrategy extends Study
         desc.exportValue(new ValueDescriptor(Values.EQUILIBRIUM, "Equilibrium", new String[]{}));
         desc.exportValue(new ValueDescriptor(Values.SSL_LEVEL, "SSL Level", new String[]{}));
         desc.exportValue(new ValueDescriptor(Values.BSL_LEVEL, "BSL Level", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.PWL, "PWL", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.PWH, "PWH", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.MAJOR_SWING_LOW, "Major Swing Low", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.MAJOR_SWING_HIGH, "Major Swing High", new String[]{}));
 
         desc.declarePath(Values.PDH, PDH_PATH);
         desc.declarePath(Values.PDL, PDL_PATH);
         desc.declarePath(Values.EQUILIBRIUM, EQ_PATH);
         desc.declarePath(Values.SSL_LEVEL, SSL_PATH);
         desc.declarePath(Values.BSL_LEVEL, BSL_PATH);
+        desc.declarePath(Values.PWL, PWL_PATH);
+        desc.declarePath(Values.PWH, PWH_PATH);
+        desc.declarePath(Values.MAJOR_SWING_LOW, MAJOR_SWING_LOW_PATH);
+        desc.declarePath(Values.MAJOR_SWING_HIGH, MAJOR_SWING_HIGH_PATH);
 
         desc.declareSignal(Signals.SSL_SWEEP, "SSL Sweep Detected");
         desc.declareSignal(Signals.BSL_SWEEP, "BSL Sweep Detected");
@@ -425,6 +481,18 @@ public class ICTSetupSelectorStrategy extends Study
         double close = series.getClose(index);
         double open = series.getOpen(index);
 
+        // Weekly reset (for PWH/PWL)
+        int barWeek = getWeekOfYear(barTime, NY_TZ);
+        if (barWeek != lastResetWeek) {
+            if (!Double.isNaN(thisWeekHigh) && !Double.isNaN(thisWeekLow)) {
+                pwh = thisWeekHigh;
+                pwl = thisWeekLow;
+            }
+            thisWeekHigh = Double.NaN;
+            thisWeekLow = Double.NaN;
+            lastResetWeek = barWeek;
+        }
+
         // Daily reset
         if (barDay != lastResetDay) {
             if (!Double.isNaN(todayHigh) && !Double.isNaN(todayLow)) {
@@ -443,6 +511,10 @@ public class ICTSetupSelectorStrategy extends Study
         if (Double.isNaN(todayHigh) || high > todayHigh) todayHigh = high;
         if (Double.isNaN(todayLow) || low < todayLow) todayLow = low;
 
+        // Track this week's high/low
+        if (Double.isNaN(thisWeekHigh) || high > thisWeekHigh) thisWeekHigh = high;
+        if (Double.isNaN(thisWeekLow) || low < thisWeekLow) thisWeekLow = low;
+
         // Track liquidity session high/low
         updateLiquiditySessionLevels(barTimeInt, high, low);
 
@@ -453,6 +525,34 @@ public class ICTSetupSelectorStrategy extends Study
             series.setDouble(index, Values.EQUILIBRIUM, (pdh + pdl) / 2.0);
         }
 
+        // Plot PWH/PWL if enabled
+        boolean pwlEnabled = getSettings().getBoolean(MMBM_PWL_ENABLED, true);
+        boolean pwhEnabled = getSettings().getBoolean(MMSM_PWH_ENABLED, true);
+        if (pwlEnabled && !Double.isNaN(pwl)) {
+            series.setDouble(index, Values.PWL, pwl);
+        }
+        if (pwhEnabled && !Double.isNaN(pwh)) {
+            series.setDouble(index, Values.PWH, pwh);
+        }
+
+        // Calculate and plot major swing levels
+        boolean majorSwingLowEnabled = getSettings().getBoolean(MMBM_MAJOR_SWING_ENABLED, true);
+        boolean majorSwingHighEnabled = getSettings().getBoolean(MMSM_MAJOR_SWING_HIGH_ENABLED, true);
+        int majorSwingLookback = getSettings().getInteger(MAJOR_SWING_LOOKBACK, 100);
+
+        if (majorSwingLowEnabled && index > majorSwingLookback) {
+            majorSwingLow = findMajorSwingLow(series, index, majorSwingLookback);
+            if (!Double.isNaN(majorSwingLow)) {
+                series.setDouble(index, Values.MAJOR_SWING_LOW, majorSwingLow);
+            }
+        }
+        if (majorSwingHighEnabled && index > majorSwingLookback) {
+            majorSwingHigh = findMajorSwingHigh(series, index, majorSwingLookback);
+            if (!Double.isNaN(majorSwingHigh)) {
+                series.setDouble(index, Values.MAJOR_SWING_HIGH, majorSwingHigh);
+            }
+        }
+
         // Only process signals on complete bars
         if (!series.isBarComplete(index)) return;
         if (Double.isNaN(pdh) || Double.isNaN(pdl)) return;
@@ -460,6 +560,7 @@ public class ICTSetupSelectorStrategy extends Study
         // Get settings
         int setupMode = getSettings().getInteger(SETUP_MODE, MODE_BOTH_MMBM_MMSM);
         int setupSelector = getSettings().getInteger(SETUP_SELECTOR, SETUP_MMBM);
+        boolean alwaysOn = getSettings().getBoolean(TRADE_WINDOW_ALWAYS_ON, false);
         int tradeStart = getSettings().getInteger(TRADE_START, 930);
         int tradeEnd = getSettings().getInteger(TRADE_END, 1130);
         int killZonePreset = getSettings().getInteger(KILL_ZONE_PRESET, KZ_NY_AM);
@@ -475,9 +576,9 @@ public class ICTSetupSelectorStrategy extends Study
         boolean requireMSSClose = getSettings().getBoolean(REQUIRE_MSS_CLOSE, true);
         int strictness = getSettings().getInteger(CONFIRMATION_STRICTNESS, STRICT_BALANCED);
 
-        // Check session/killzone
-        boolean inTradeSession = barTimeInt >= tradeStart && barTimeInt < tradeEnd;
-        boolean inKillZone = isInKillZone(barTimeInt, killZonePreset);
+        // Check session/killzone (bypass if always on)
+        boolean inTradeSession = alwaysOn || (barTimeInt >= tradeStart && barTimeInt < tradeEnd);
+        boolean inKillZone = alwaysOn || isInKillZone(barTimeInt, killZonePreset);
 
         // Check EOD cutoff
         boolean eodEnabled = getSettings().getBoolean(EOD_CLOSE_ENABLED, true);
@@ -560,7 +661,12 @@ public class ICTSetupSelectorStrategy extends Study
             boolean requireMSSClose, boolean requireCloseBack, int strictness, boolean canTrade,
             double high, double low, double close, double open, long barTime)
     {
-        // Phase 1: Detect SSL sweep
+        // Get deeper liquidity settings
+        boolean pwlEnabled = getSettings().getBoolean(MMBM_PWL_ENABLED, true);
+        boolean majorSwingEnabled = getSettings().getBoolean(MMBM_MAJOR_SWING_ENABLED, true);
+        boolean requireDeeperLiq = getSettings().getBoolean(REQUIRE_DEEPER_LIQ, false);
+
+        // Phase 1: Detect SSL sweep (check deepest levels first for strength)
         if (mmbmState == STATE_IDLE && canTrade && !Double.isNaN(mmbmSslLevel)) {
             double sweepThreshold = mmbmSslLevel - (sweepMinTicks * tickSize);
             if (low <= sweepThreshold) {
@@ -568,13 +674,44 @@ public class ICTSetupSelectorStrategy extends Study
                 if (strictness == STRICT_AGGRESSIVE) validSweep = true;
 
                 if (validSweep) {
+                    // Determine sweep strength - check deepest levels first
+                    mmbmSweepStrength = 1; // Default: PDL sweep
+                    String sweepType = "PDL";
+
+                    // Check if also swept PWL (deeper)
+                    if (pwlEnabled && !Double.isNaN(pwl)) {
+                        double pwlThreshold = pwl - (sweepMinTicks * tickSize);
+                        if (low <= pwlThreshold) {
+                            mmbmSweepStrength = 2;
+                            sweepType = "PWL";
+                        }
+                    }
+
+                    // Check if also swept Major Swing Low (deepest)
+                    if (majorSwingEnabled && !Double.isNaN(majorSwingLow)) {
+                        double majorThreshold = majorSwingLow - (sweepMinTicks * tickSize);
+                        if (low <= majorThreshold) {
+                            mmbmSweepStrength = 3;
+                            sweepType = "MAJOR SWING LOW";
+                        }
+                    }
+
+                    // If require deeper liquidity and only PDL swept, skip
+                    if (requireDeeperLiq && mmbmSweepStrength == 1) {
+                        debug("MMBM: PDL sweep detected but deeper liquidity required - skipping");
+                        return;
+                    }
+
                     mmbmSweepDetected = true;
                     mmbmSweepLow = low;
                     mmbmState = STATE_SWEEP_DETECTED;
                     mmbmMssLevel = findSwingHigh(series, index, pivotStrength);
+
+                    String strengthLabel = mmbmSweepStrength == 3 ? " [STRONGEST]" :
+                                           mmbmSweepStrength == 2 ? " [STRONG]" : "";
                     ctx.signal(index, Signals.SSL_SWEEP,
-                        String.format("SSL Sweep: Low=%.2f below SSL=%.2f", low, mmbmSslLevel), low);
-                    debug("MMBM: SSL sweep at " + low);
+                        String.format("%s Sweep: Low=%.2f%s", sweepType, low, strengthLabel), low);
+                    debug("MMBM: " + sweepType + " sweep at " + low + " (strength=" + mmbmSweepStrength + ")");
                 }
             }
         }
@@ -623,11 +760,15 @@ public class ICTSetupSelectorStrategy extends Study
         if (mmbmState == STATE_ENTRY_READY && canTrade && !mmbmWaitingForFill) {
             mmbmWaitingForFill = true;
             mmbmEntryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_LONG, "MMBM Long Ready", close);
+
+            String strengthLabel = mmbmSweepStrength == 3 ? " [MAJOR SWING]" :
+                                   mmbmSweepStrength == 2 ? " [PWL]" : "";
+            ctx.signal(index, Signals.ENTRY_LONG, "MMBM Long Ready" + strengthLabel, close);
 
             var marker = getSettings().getMarker(Inputs.UP_MARKER);
             if (marker.isEnabled()) {
-                addFigure(new Marker(new Coordinate(barTime, low), Enums.Position.BOTTOM, marker, "MMBM"));
+                String markerLabel = mmbmSweepStrength >= 2 ? "MMBM+" : "MMBM";
+                addFigure(new Marker(new Coordinate(barTime, low), Enums.Position.BOTTOM, marker, markerLabel));
             }
         }
     }
@@ -639,7 +780,12 @@ public class ICTSetupSelectorStrategy extends Study
             boolean requireMSSClose, boolean requireCloseBack, int strictness, boolean canTrade,
             double high, double low, double close, double open, long barTime)
     {
-        // Phase 1: Detect BSL sweep
+        // Get deeper liquidity settings
+        boolean pwhEnabled = getSettings().getBoolean(MMSM_PWH_ENABLED, true);
+        boolean majorSwingEnabled = getSettings().getBoolean(MMSM_MAJOR_SWING_HIGH_ENABLED, true);
+        boolean requireDeeperLiq = getSettings().getBoolean(REQUIRE_DEEPER_LIQ, false);
+
+        // Phase 1: Detect BSL sweep (check deepest levels first for strength)
         if (mmsmState == STATE_IDLE && canTrade && !Double.isNaN(mmsmBslLevel)) {
             double sweepThreshold = mmsmBslLevel + (sweepMinTicks * tickSize);
             if (high >= sweepThreshold) {
@@ -647,13 +793,44 @@ public class ICTSetupSelectorStrategy extends Study
                 if (strictness == STRICT_AGGRESSIVE) validSweep = true;
 
                 if (validSweep) {
+                    // Determine sweep strength - check deepest levels first
+                    mmsmSweepStrength = 1; // Default: PDH sweep
+                    String sweepType = "PDH";
+
+                    // Check if also swept PWH (deeper)
+                    if (pwhEnabled && !Double.isNaN(pwh)) {
+                        double pwhThreshold = pwh + (sweepMinTicks * tickSize);
+                        if (high >= pwhThreshold) {
+                            mmsmSweepStrength = 2;
+                            sweepType = "PWH";
+                        }
+                    }
+
+                    // Check if also swept Major Swing High (deepest)
+                    if (majorSwingEnabled && !Double.isNaN(majorSwingHigh)) {
+                        double majorThreshold = majorSwingHigh + (sweepMinTicks * tickSize);
+                        if (high >= majorThreshold) {
+                            mmsmSweepStrength = 3;
+                            sweepType = "MAJOR SWING HIGH";
+                        }
+                    }
+
+                    // If require deeper liquidity and only PDH swept, skip
+                    if (requireDeeperLiq && mmsmSweepStrength == 1) {
+                        debug("MMSM: PDH sweep detected but deeper liquidity required - skipping");
+                        return;
+                    }
+
                     mmsmSweepDetected = true;
                     mmsmSweepHigh = high;
                     mmsmState = STATE_SWEEP_DETECTED;
                     mmsmMssLevel = findSwingLow(series, index, pivotStrength);
+
+                    String strengthLabel = mmsmSweepStrength == 3 ? " [STRONGEST]" :
+                                           mmsmSweepStrength == 2 ? " [STRONG]" : "";
                     ctx.signal(index, Signals.BSL_SWEEP,
-                        String.format("BSL Sweep: High=%.2f above BSL=%.2f", high, mmsmBslLevel), high);
-                    debug("MMSM: BSL sweep at " + high);
+                        String.format("%s Sweep: High=%.2f%s", sweepType, high, strengthLabel), high);
+                    debug("MMSM: " + sweepType + " sweep at " + high + " (strength=" + mmsmSweepStrength + ")");
                 }
             }
         }
@@ -702,11 +879,15 @@ public class ICTSetupSelectorStrategy extends Study
         if (mmsmState == STATE_ENTRY_READY && canTrade && !mmsmWaitingForFill) {
             mmsmWaitingForFill = true;
             mmsmEntryBarIndex = index;
-            ctx.signal(index, Signals.ENTRY_SHORT, "MMSM Short Ready", close);
+
+            String strengthLabel = mmsmSweepStrength == 3 ? " [MAJOR SWING]" :
+                                   mmsmSweepStrength == 2 ? " [PWH]" : "";
+            ctx.signal(index, Signals.ENTRY_SHORT, "MMSM Short Ready" + strengthLabel, close);
 
             var marker = getSettings().getMarker(Inputs.DOWN_MARKER);
             if (marker.isEnabled()) {
-                addFigure(new Marker(new Coordinate(barTime, high), Enums.Position.TOP, marker, "MMSM"));
+                String markerLabel = mmsmSweepStrength >= 2 ? "MMSM+" : "MMSM";
+                addFigure(new Marker(new Coordinate(barTime, high), Enums.Position.TOP, marker, markerLabel));
             }
         }
     }
@@ -1031,6 +1212,7 @@ public class ICTSetupSelectorStrategy extends Study
         mmbmFvgBarIndex = -1;
         mmbmWaitingForFill = false;
         mmbmEntryBarIndex = -1;
+        mmbmSweepStrength = 0;
     }
 
     private void resetMMSMState() {
@@ -1045,6 +1227,7 @@ public class ICTSetupSelectorStrategy extends Study
         mmsmFvgBarIndex = -1;
         mmsmWaitingForFill = false;
         mmsmEntryBarIndex = -1;
+        mmsmSweepStrength = 0;
     }
 
     private void resetTradeState() {
@@ -1120,17 +1303,92 @@ public class ICTSetupSelectorStrategy extends Study
         return cal.get(Calendar.DAY_OF_YEAR) + cal.get(Calendar.YEAR) * 1000;
     }
 
+    private int getWeekOfYear(long time, TimeZone tz) {
+        Calendar cal = Calendar.getInstance(tz);
+        cal.setTimeInMillis(time);
+        return cal.get(Calendar.WEEK_OF_YEAR) + cal.get(Calendar.YEAR) * 100;
+    }
+
+    /**
+     * Find the major swing low over the specified lookback period.
+     * Uses a larger pivot strength (5) for HTF swing detection.
+     */
+    private double findMajorSwingLow(DataSeries series, int index, int lookback) {
+        int htfStrength = 5; // Larger strength for major swings
+        double lowestSwing = Double.NaN;
+
+        int startIdx = Math.max(htfStrength, index - lookback);
+        for (int i = startIdx; i <= index - htfStrength; i++) {
+            double low = series.getLow(i);
+            boolean isSwing = true;
+            for (int j = 1; j <= htfStrength && isSwing; j++) {
+                if (i - j >= 0 && series.getLow(i - j) <= low) isSwing = false;
+                if (i + j <= index && series.getLow(i + j) <= low) isSwing = false;
+            }
+            if (isSwing) {
+                if (Double.isNaN(lowestSwing) || low < lowestSwing) {
+                    lowestSwing = low;
+                }
+            }
+        }
+        return lowestSwing;
+    }
+
+    /**
+     * Find the major swing high over the specified lookback period.
+     * Uses a larger pivot strength (5) for HTF swing detection.
+     */
+    private double findMajorSwingHigh(DataSeries series, int index, int lookback) {
+        int htfStrength = 5; // Larger strength for major swings
+        double highestSwing = Double.NaN;
+
+        int startIdx = Math.max(htfStrength, index - lookback);
+        for (int i = startIdx; i <= index - htfStrength; i++) {
+            double high = series.getHigh(i);
+            boolean isSwing = true;
+            for (int j = 1; j <= htfStrength && isSwing; j++) {
+                if (i - j >= 0 && series.getHigh(i - j) >= high) isSwing = false;
+                if (i + j <= index && series.getHigh(i + j) >= high) isSwing = false;
+            }
+            if (isSwing) {
+                if (Double.isNaN(highestSwing) || high > highestSwing) {
+                    highestSwing = high;
+                }
+            }
+        }
+        return highestSwing;
+    }
+
+    /**
+     * Get sweep strength label for display
+     */
+    private String getSweepStrengthLabel(int strength) {
+        switch (strength) {
+            case 1: return "PDL";
+            case 2: return "PWL";
+            case 3: return "MAJOR SWING";
+            default: return "";
+        }
+    }
+
     @Override
     public void clearState() {
         super.clearState();
         resetDailyState();
         lastResetDay = -1;
+        lastResetWeek = -1;
         pdh = Double.NaN;
         pdl = Double.NaN;
+        pwh = Double.NaN;
+        pwl = Double.NaN;
         todayHigh = Double.NaN;
         todayLow = Double.NaN;
+        thisWeekHigh = Double.NaN;
+        thisWeekLow = Double.NaN;
         sessionHigh = Double.NaN;
         sessionLow = Double.NaN;
+        majorSwingHigh = Double.NaN;
+        majorSwingLow = Double.NaN;
         inLiquiditySession = false;
     }
 }

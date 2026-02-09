@@ -25,36 +25,24 @@ Professional trading strategies for MotiveWave platform.
 
 ## Strategy Library
 
-### Mean Reversion Strategies
-
-| Strategy | Description | Best Timeframe | Markets |
-|----------|-------------|----------------|---------|
-| [RTH Sweep Mean Reversion](./RTH_Sweep_Mean_Reversion.md) | Trades sweeps of morning balance range with VWAP filter | 5-15 min | ES, NQ, MES, MNQ |
-| [6-10am Range Sweep](./Early_Window_Sweep.md) | Early session range sweep with narrow trade window | 5-15 min | ES, NQ, Futures |
-| [Sweep Mean Reversion](./Sweep_Mean_Reversion.md) | Basic rolling range sweep detection | 5-30 min | All Futures |
-
 ### ICT Strategies
 
 | Strategy | Description | Best Timeframe | Markets |
 |----------|-------------|----------------|---------|
-| [ICT MMBM (Buy Model)](./ICT_MMBM.md) | Buy-side model: SSL sweep → MSS → FVG entry | 5-15 min | ES, NQ, Forex |
-| [ICT MMSM (Sell Model)](./ICT_MMSM.md) | Sell-side model: BSL sweep → MSS → FVG entry | 5-15 min | ES, NQ, Forex |
 | [ICT Setup Selector](./ICT_Setup_Selector.md) | Multi-setup suite with JadeCap presets (MMBM, MMSM, Session Raid, London-NY, Daily PO3) | 5-15 min | ES, NQ, Forex |
-| [Lanto IFVG Continuation](./Lanto_IFVG_Continuation.md) | IFVG continuation with displacement filter, bias model, fixed-R exits | 1 min | NQ, MNQ, ES, MES |
-| [BrianStonk Modular](./BrianStonk_Modular.md) | Modular ORB + IFVG + OB/Breaker with presets, NY PM session | 1 min | NQ, MNQ, ES, MES |
+| [BrianStonk Modular](./BrianStonk_Modular.md) | Modular ICT engine with OB, Breaker, FVG, IFVG, BPR, Unicorn setups, draw liquidity, TF alignment | 1-5 min | NQ, MNQ, ES, MES |
+
+### Breakout Strategies
+
+| Strategy | Description | Best Timeframe | Markets |
+|----------|-------------|----------------|---------|
+| [Time Range Breakout](./Time_Range_Breakout.md) | Time-window range breakout with TP1 partial, runner trail, BE, and EOD flatten | 1-5 min | All Futures |
 
 ### Adaptive S/R Strategies
 
 | Strategy | Description | Best Timeframe | Markets |
 |----------|-------------|----------------|---------|
-| [Magic Line](./Magic_Line.md) | Regressive S/R line with Support Bounce, Side-Exit, and Table-Top patterns | Any | All Futures |
-
-### Trend Following
-
-| Strategy | Description | Best Timeframe | Markets |
-|----------|-------------|----------------|---------|
-| [MA Cross Strategy](./MA_Cross_Strategy.md) | Moving average crossover with ATR stops | 15-60 min | All |
-| [MTF MA Model Strategy](./MTF_MA_Model.md) | Multi-timeframe MA with pivot confirmation, OB visualization, auto-trading | 5-15 min | All |
+| [Magic Line](./Magic_Line.md) | Regressive S/R line (LB) with Support Bounce, Side-Exit, and Table-Top patterns | Any | All Futures |
 
 ---
 
@@ -89,7 +77,7 @@ Professional trading strategies for MotiveWave platform.
 | MES (Micro E-mini S&P) | 0.25 | $1.25 | All |
 | NQ (E-mini Nasdaq) | 0.25 | $5.00 | All |
 | MNQ (Micro Nasdaq) | 0.25 | $0.50 | All |
-| CL (Crude Oil) | 0.01 | $10.00 | Mean Reversion |
+| CL (Crude Oil) | 0.01 | $10.00 | Time Range Breakout |
 | GC (Gold) | 0.10 | $10.00 | ICT Models |
 
 ---

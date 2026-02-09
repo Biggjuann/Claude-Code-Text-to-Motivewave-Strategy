@@ -107,6 +107,8 @@ public class BrianStonkModularStrategy extends Study
     private static final String STOP_MAX = "stopMax";
     private static final String STOP_OVERRIDE_TO_STRUCTURE = "stopOverrideToStructure";
     private static final String FIXED_CONTRACTS = "fixedContracts";
+    private static final String BE_ENABLED = "beEnabled";
+    private static final String BE_TRIGGER_PTS = "beTriggerPts";
 
     // Targets
     private static final String TARGET_MODE = "targetMode";
@@ -248,6 +250,7 @@ public class BrianStonkModularStrategy extends Study
     private double riskPoints = 0;
     private int entryBar = -1;
     private boolean partialTaken = false;
+    private boolean beActivated = false;
     private String entryModel = "";
 
     // Pending confirmation
@@ -338,6 +341,10 @@ public class BrianStonkModularStrategy extends Study
         grp.addRow(new DoubleDescriptor(STOP_MIN, "Min Stop (points)", 10.0, 1.0, 50.0, 0.5));
         grp.addRow(new DoubleDescriptor(STOP_MAX, "Max Stop (points)", 15.0, 5.0, 100.0, 1.0));
         grp.addRow(new BooleanDescriptor(STOP_OVERRIDE_TO_STRUCTURE, "Override to Structure if Tight", true));
+
+        grp = tab.addGroup("Breakeven");
+        grp.addRow(new BooleanDescriptor(BE_ENABLED, "Move Stop to Breakeven", true));
+        grp.addRow(new DoubleDescriptor(BE_TRIGGER_PTS, "BE Trigger (points profit)", 3.0, 0.25, 50.0, 0.25));
 
         grp = tab.addGroup("Position Size");
         grp.addRow(new IntegerDescriptor(FIXED_CONTRACTS, "Contracts", 1, 1, 100, 1));
@@ -1132,6 +1139,7 @@ public class BrianStonkModularStrategy extends Study
         riskPoints = 0;
         entryBar = -1;
         partialTaken = false;
+        beActivated = false;
         entryModel = "";
     }
 
@@ -1289,6 +1297,22 @@ public class BrianStonkModularStrategy extends Study
             debug("SHORT stopped");
             resetTradeState();
             return;
+        }
+
+        // Move to breakeven
+        if (getSettings().getBoolean(BE_ENABLED, true) && !beActivated && riskPoints > 0) {
+            double beTrigger = getSettings().getDouble(BE_TRIGGER_PTS, 3.0);
+            double unrealizedPts = isLongPosition ? close - entryPrice : entryPrice - close;
+            if (unrealizedPts >= beTrigger) {
+                double bePrice = instr.round(entryPrice);
+                if (isLongPosition && bePrice > stopPrice) {
+                    stopPrice = bePrice;
+                } else if (!isLongPosition && bePrice < stopPrice) {
+                    stopPrice = bePrice;
+                }
+                beActivated = true;
+                debug("Stop moved to breakeven: " + stopPrice);
+            }
         }
 
         // Partial at R

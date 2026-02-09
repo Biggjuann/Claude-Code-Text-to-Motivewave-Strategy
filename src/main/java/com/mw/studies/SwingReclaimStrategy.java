@@ -1,0 +1,806 @@
+package com.mw.studies;
+
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Iterator;
+import java.util.List;
+import java.util.TimeZone;
+
+import com.motivewave.platform.sdk.common.*;
+import com.motivewave.platform.sdk.common.desc.*;
+import com.motivewave.platform.sdk.draw.*;
+import com.motivewave.platform.sdk.order_mgmt.OrderContext;
+import com.motivewave.platform.sdk.study.Study;
+import com.motivewave.platform.sdk.study.StudyHeader;
+
+/**
+ * Swing Reclaim Strategy v1.0
+ *
+ * Detects swing highs/lows using standard pivot detection (bar's high/low must
+ * exceed all bars within 'strength' bars on each side). Draws horizontal levels
+ * and trades the "break then reclaim" pattern — a liquidity sweep that fails:
+ *
+ *   ACTIVE -> BROKEN (sweep) -> RECLAIM (entry)
+ *
+ * Swing HIGH (Short setup — buy-side liquidity sweep):
+ *   1. Level exists at price X (resistance)
+ *   2. BROKEN: bar closes ABOVE X (sweeps buy-side liquidity)
+ *   3. RECLAIM: subsequent bar closes BELOW X -> SHORT entry (failed breakout)
+ *   4. Stop = sweep extreme high + buffer ticks
+ *
+ * Swing LOW (Long setup — sell-side liquidity sweep):
+ *   1. Level exists at price Y (support)
+ *   2. BROKEN: bar closes BELOW Y (sweeps sell-side liquidity)
+ *   3. RECLAIM: subsequent bar closes ABOVE Y -> LONG entry (failed breakdown)
+ *   4. Stop = sweep extreme low - buffer ticks
+ *
+ * ============================================================
+ * INPUTS
+ * ============================================================
+ * - strength (int): Swing detection strength, bars on each side [default: 45]
+ * - retentionDays (int): Days to retain swing levels [default: 30]
+ * - enableLong (bool): Enable long setups [default: true]
+ * - enableShort (bool): Enable short setups [default: true]
+ * - contracts (int): Position size [default: 2]
+ * - stopBufferTicks (int): Stop buffer beyond sweep extreme [default: 4]
+ * - tp1Points (double): TP1 distance in points [default: 20.0]
+ * - tp1Pct (int): Percentage of position to close at TP1 [default: 50]
+ * - trailPoints (double): Trailing stop distance for runner [default: 15.0]
+ *
+ * ============================================================
+ * OUTPUTS / PLOTS
+ * ============================================================
+ * - Swing high horizontal lines (red dashed)
+ * - Swing low horizontal lines (green dashed)
+ * - Entry markers (triangle up/down)
+ *
+ * ============================================================
+ * SIGNALS
+ * ============================================================
+ * - RECLAIM_LONG: Swing low swept below, price reclaims above (failed breakdown)
+ * - RECLAIM_SHORT: Swing high swept above, price reclaims below (failed breakout)
+ *
+ * ============================================================
+ * CALCULATION LOGIC
+ * ============================================================
+ * 1. Detect swing pivots: high/low must exceed strength bars on each side
+ * 2. Track level state machine per level: ACTIVE -> BROKEN -> entry on reclaim
+ * 3. On RECLAIM, fire signal and enter trade
+ * 4. Manage trade: TP1 partial, move stop to BE, trail runner, EOD flatten
+ *
+ * @version 1.0.0
+ * @author MW Study Builder
+ * @generated 2026-02-08
+ */
+@StudyHeader(
+    namespace = "com.mw.studies",
+    id = "SWING_RECLAIM",
+    rb = "com.mw.studies.nls.strings",
+    name = "SWING_RECLAIM",
+    label = "LBL_SWING_RECLAIM",
+    desc = "DESC_SWING_RECLAIM",
+    menu = "MW Generated",
+    overlay = true,
+    studyOverlay = true,
+    strategy = true,
+    autoEntry = true,
+    manualEntry = false,
+    signals = true,
+    supportsUnrealizedPL = true,
+    supportsRealizedPL = true,
+    supportsTotalPL = true,
+    supportsBarUpdates = false
+)
+public class SwingReclaimStrategy extends Study
+{
+    // ==================== Input Keys ====================
+
+    // Setup
+    private static final String ENABLE_LONG = "enableLong";
+    private static final String ENABLE_SHORT = "enableShort";
+    private static final String STRENGTH = "strength";
+    private static final String RETENTION_DAYS = "retentionDays";
+
+    // Entry
+    private static final String MAX_TRADES_DAY = "maxTradesDay";
+    private static final String SESSION_ENABLED = "sessionEnabled";
+    private static final String SESSION_START = "sessionStart";
+    private static final String SESSION_END = "sessionEnd";
+
+    // Risk
+    private static final String CONTRACTS = "contracts";
+    private static final String STOP_BUFFER_TICKS = "stopBufferTicks";
+    private static final String STOP_MIN_PTS = "stopMinPts";
+    private static final String STOP_MAX_PTS = "stopMaxPts";
+
+    // Targets
+    private static final String TP1_POINTS = "tp1Points";
+    private static final String TP1_PCT = "tp1Pct";
+    private static final String TRAIL_POINTS = "trailPoints";
+
+    // EOD
+    private static final String EOD_ENABLED = "eodEnabled";
+    private static final String EOD_TIME = "eodTime";
+
+    // Display
+    private static final String SHOW_LEVELS = "showLevels";
+    private static final String SWING_HIGH_PATH = "swingHighPath";
+    private static final String SWING_LOW_PATH = "swingLowPath";
+
+    // ==================== Level States ====================
+    private static final int STATE_ACTIVE = 0;
+    private static final int STATE_BROKEN = 1;
+
+    // ==================== Values & Signals ====================
+    enum Values { NEAREST_HIGH, NEAREST_LOW }
+    enum Signals { RECLAIM_LONG, RECLAIM_SHORT }
+
+    // ==================== Inner Classes ====================
+
+    /** Tracked swing level with state machine */
+    private static class SwingLevel {
+        double price;
+        boolean isHigh;
+        int state;              // STATE_ACTIVE, STATE_BROKEN
+        double sweepExtreme;    // extreme price while broken (high for swing high, low for swing low)
+        long detectedTime;      // when the pivot was confirmed
+        boolean traded;         // already triggered a trade
+
+        SwingLevel(double price, boolean isHigh, long detectedTime) {
+            this.price = price;
+            this.isHigh = isHigh;
+            this.state = STATE_ACTIVE;
+            this.sweepExtreme = Double.NaN;
+            this.detectedTime = detectedTime;
+            this.traded = false;
+        }
+    }
+
+    // ==================== Constants ====================
+    private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
+    private static final long MS_PER_DAY = 86400000L;
+
+    // ==================== State ====================
+
+    // Swing levels
+    private List<SwingLevel> swingLevels = new ArrayList<>();
+
+    // Trade state
+    private boolean isLongTrade = false;
+    private double entryPrice = 0;
+    private double stopPrice = 0;
+    private double tp1Price = 0;
+    private boolean tp1Filled = false;
+    private boolean beActivated = false;
+    private double bestPriceInTrade = Double.NaN;
+    private double trailStopPrice = Double.NaN;
+    private boolean trailingActive = false;
+
+    // Daily tracking
+    private int tradesToday = 0;
+    private int lastResetDay = -1;
+    private boolean eodProcessed = false;
+
+    // ==================== INITIALIZE ====================
+    @Override
+    public void initialize(Defaults defaults)
+    {
+        var sd = createSD();
+
+        // ===== Tab: Setup =====
+        var tab = sd.addTab("Setup");
+        var grp = tab.addGroup("Direction");
+        grp.addRow(new BooleanDescriptor(ENABLE_LONG, "Enable Long Setups", true));
+        grp.addRow(new BooleanDescriptor(ENABLE_SHORT, "Enable Short Setups", true));
+
+        grp = tab.addGroup("Swing Detection");
+        grp.addRow(new IntegerDescriptor(STRENGTH, "Swing Strength (bars each side)", 45, 5, 200, 1));
+        grp.addRow(new IntegerDescriptor(RETENTION_DAYS, "Level Retention (days)", 30, 1, 90, 1));
+
+        // ===== Tab: Entry =====
+        tab = sd.addTab("Entry");
+        grp = tab.addGroup("Trade Limits");
+        grp.addRow(new IntegerDescriptor(MAX_TRADES_DAY, "Max Trades Per Day", 3, 1, 10, 1));
+
+        grp = tab.addGroup("Session Window (ET)");
+        grp.addRow(new BooleanDescriptor(SESSION_ENABLED, "Restrict to Session Window", false));
+        grp.addRow(new IntegerDescriptor(SESSION_START, "Session Start (HHMM)", 930, 0, 2359, 1));
+        grp.addRow(new IntegerDescriptor(SESSION_END, "Session End (HHMM)", 1600, 0, 2359, 1));
+
+        // ===== Tab: Risk =====
+        tab = sd.addTab("Risk");
+        grp = tab.addGroup("Position Size");
+        grp.addRow(new IntegerDescriptor(CONTRACTS, "Contracts", 2, 1, 100, 1));
+
+        grp = tab.addGroup("Stop Loss");
+        grp.addRow(new IntegerDescriptor(STOP_BUFFER_TICKS, "Stop Buffer (ticks beyond sweep extreme)", 4, 0, 50, 1));
+        grp.addRow(new DoubleDescriptor(STOP_MIN_PTS, "Min Stop Distance (pts)", 2.0, 0.25, 50.0, 0.25));
+        grp.addRow(new DoubleDescriptor(STOP_MAX_PTS, "Max Stop Distance (pts)", 40.0, 1.0, 200.0, 0.5));
+
+        // ===== Tab: Targets =====
+        tab = sd.addTab("Targets");
+        grp = tab.addGroup("TP1 (Partial)");
+        grp.addRow(new DoubleDescriptor(TP1_POINTS, "TP1 Distance (points)", 20.0, 0.25, 200.0, 0.25));
+        grp.addRow(new IntegerDescriptor(TP1_PCT, "TP1 % of Contracts", 50, 1, 99, 1));
+
+        grp = tab.addGroup("Runner Trail");
+        grp.addRow(new DoubleDescriptor(TRAIL_POINTS, "Trail Distance (points)", 15.0, 0.25, 100.0, 0.25));
+
+        // ===== Tab: EOD =====
+        tab = sd.addTab("EOD");
+        grp = tab.addGroup("End of Day");
+        grp.addRow(new BooleanDescriptor(EOD_ENABLED, "Force Flat at EOD", true));
+        grp.addRow(new IntegerDescriptor(EOD_TIME, "EOD Time (HHMM)", 1640, 0, 2359, 1));
+
+        // ===== Tab: Display =====
+        tab = sd.addTab("Display");
+        grp = tab.addGroup("Swing Levels");
+        grp.addRow(new BooleanDescriptor(SHOW_LEVELS, "Show Swing Levels", true));
+        grp.addRow(new PathDescriptor(SWING_HIGH_PATH, "Swing High Line",
+            defaults.getRedLine(), 1.5f, new float[]{6, 3}, true, false, false));
+        grp.addRow(new PathDescriptor(SWING_LOW_PATH, "Swing Low Line",
+            defaults.getGreenLine(), 1.5f, new float[]{6, 3}, true, false, false));
+
+        grp = tab.addGroup("Entry Markers");
+        grp.addRow(new MarkerDescriptor(Inputs.UP_MARKER, "Long Entry",
+            Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getGreen(), defaults.getLineColor(), true, true));
+        grp.addRow(new MarkerDescriptor(Inputs.DOWN_MARKER, "Short Entry",
+            Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getRed(), defaults.getLineColor(), true, true));
+
+        // Quick settings
+        sd.addQuickSettings(CONTRACTS, STRENGTH, TP1_POINTS, TRAIL_POINTS, MAX_TRADES_DAY);
+
+        // ===== Runtime Descriptor =====
+        var desc = createRD();
+        desc.setLabelSettings(CONTRACTS, STRENGTH);
+
+        desc.exportValue(new ValueDescriptor(Values.NEAREST_HIGH, "Nearest Swing High", new String[]{}));
+        desc.exportValue(new ValueDescriptor(Values.NEAREST_LOW, "Nearest Swing Low", new String[]{}));
+        desc.declarePath(Values.NEAREST_HIGH, SWING_HIGH_PATH);
+        desc.declarePath(Values.NEAREST_LOW, SWING_LOW_PATH);
+
+        desc.declareSignal(Signals.RECLAIM_LONG, "Reclaim Long");
+        desc.declareSignal(Signals.RECLAIM_SHORT, "Reclaim Short");
+
+        desc.setRangeKeys(Values.NEAREST_HIGH, Values.NEAREST_LOW);
+    }
+
+    @Override
+    public int getMinBars() { return 100; }
+
+    // ==================== CALCULATE ====================
+    @Override
+    protected void calculate(int index, DataContext ctx)
+    {
+        var series = ctx.getDataSeries();
+        var settings = getSettings();
+        int strength = settings.getInteger(STRENGTH, 45);
+
+        // Need at least strength bars on each side for pivot detection
+        if (index < strength) return;
+
+        long barTime = series.getStartTime(index);
+        int barTimeInt = getTimeInt(barTime);
+        int barDay = getDayOfYear(barTime);
+
+        double high = series.getHigh(index);
+        double low = series.getLow(index);
+        double close = series.getClose(index);
+
+        // ===== Daily Reset =====
+        if (barDay != lastResetDay) {
+            tradesToday = 0;
+            eodProcessed = false;
+            lastResetDay = barDay;
+        }
+
+        // ===== Purge old levels =====
+        int retentionDays = settings.getInteger(RETENTION_DAYS, 30);
+        long cutoffTime = barTime - (long) retentionDays * MS_PER_DAY;
+        Iterator<SwingLevel> it = swingLevels.iterator();
+        while (it.hasNext()) {
+            SwingLevel lv = it.next();
+            if (lv.detectedTime < cutoffTime) it.remove();
+        }
+
+        // ===== Swing Pivot Detection =====
+        // Check the bar at index - strength (the candidate), which now has 'strength'
+        // bars confirmed on the right side (up to index)
+        int candidate = index - strength;
+        if (candidate >= strength) {
+            detectSwingPivot(series, candidate, strength, barTime);
+        }
+
+        // ===== Update Level State Machine =====
+        // Process all levels for state transitions based on current bar close
+        boolean enableLong = settings.getBoolean(ENABLE_LONG, true);
+        boolean enableShort = settings.getBoolean(ENABLE_SHORT, true);
+
+        for (SwingLevel lv : swingLevels) {
+            if (lv.traded) continue;
+
+            if (lv.isHigh) {
+                // Swing HIGH -> Short setup: ACTIVE -> BROKEN (close above = sweep) -> reclaim below = SHORT
+                switch (lv.state) {
+                    case STATE_ACTIVE:
+                        if (close > lv.price) {
+                            lv.state = STATE_BROKEN;
+                            lv.sweepExtreme = high; // track highest high during sweep
+                        }
+                        break;
+                    case STATE_BROKEN:
+                        // Still broken — update sweep extreme to highest high
+                        if (close > lv.price && high > lv.sweepExtreme) {
+                            lv.sweepExtreme = high;
+                        }
+                        // Reclaim check is done in signal section below
+                        break;
+                }
+            } else {
+                // Swing LOW -> Long setup: ACTIVE -> BROKEN (close below = sweep) -> reclaim above = LONG
+                switch (lv.state) {
+                    case STATE_ACTIVE:
+                        if (close < lv.price) {
+                            lv.state = STATE_BROKEN;
+                            lv.sweepExtreme = low; // track lowest low during sweep
+                        }
+                        break;
+                    case STATE_BROKEN:
+                        // Still broken — update sweep extreme to lowest low
+                        if (close < lv.price && low < lv.sweepExtreme) {
+                            lv.sweepExtreme = low;
+                        }
+                        // Reclaim check is done in signal section below
+                        break;
+                }
+            }
+        }
+
+        // ===== Plot Levels =====
+        if (settings.getBoolean(SHOW_LEVELS, true)) {
+            plotSwingLevels(series, index, barTime);
+        }
+
+        // ===== Bar Completion Gate =====
+        if (!series.isBarComplete(index)) return;
+
+        // ===== EOD Gate =====
+        boolean eodEnabled = settings.getBoolean(EOD_ENABLED, true);
+        int eodTime = settings.getInteger(EOD_TIME, 1640);
+        if (eodEnabled && barTimeInt >= eodTime) {
+            series.setComplete(index);
+            return;
+        }
+
+        // ===== Session Window Gate =====
+        boolean sessionEnabled = settings.getBoolean(SESSION_ENABLED, false);
+        int sessionStart = settings.getInteger(SESSION_START, 930);
+        int sessionEnd = settings.getInteger(SESSION_END, 1600);
+        boolean inSession = !sessionEnabled || (barTimeInt >= sessionStart && barTimeInt < sessionEnd);
+
+        // ===== Trade Limit Gate =====
+        int maxTrades = settings.getInteger(MAX_TRADES_DAY, 3);
+        boolean canTrade = inSession && tradesToday < maxTrades;
+
+        // ===== Check for RECLAIM signals =====
+        if (canTrade) {
+            for (SwingLevel lv : swingLevels) {
+                if (lv.traded || lv.state != STATE_BROKEN) continue;
+
+                if (lv.isHigh && enableShort) {
+                    // Swing HIGH was swept above, price reclaims below -> SHORT (failed breakout)
+                    if (close < lv.price) {
+                        lv.traded = true;
+                        ctx.signal(index, Signals.RECLAIM_SHORT,
+                            "Sweep High " + fmt(lv.price) + " -> Short", close);
+
+                        var marker = settings.getMarker(Inputs.DOWN_MARKER);
+                        if (marker != null && marker.isEnabled()) {
+                            addFigure(new Marker(
+                                new Coordinate(barTime, high),
+                                Enums.Position.TOP, marker,
+                                "RCL S " + fmt(lv.price)));
+                        }
+                        break; // One signal per bar
+                    }
+                } else if (!lv.isHigh && enableLong) {
+                    // Swing LOW was swept below, price reclaims above -> LONG (failed breakdown)
+                    if (close > lv.price) {
+                        lv.traded = true;
+                        ctx.signal(index, Signals.RECLAIM_LONG,
+                            "Sweep Low " + fmt(lv.price) + " -> Long", close);
+
+                        var marker = settings.getMarker(Inputs.UP_MARKER);
+                        if (marker != null && marker.isEnabled()) {
+                            addFigure(new Marker(
+                                new Coordinate(barTime, low),
+                                Enums.Position.BOTTOM, marker,
+                                "RCL L " + fmt(lv.price)));
+                        }
+                        break; // One signal per bar
+                    }
+                }
+            }
+        }
+
+        series.setComplete(index);
+    }
+
+    // ==================== SWING PIVOT DETECTION ====================
+
+    private void detectSwingPivot(DataSeries series, int candidate, int strength, long currentBarTime)
+    {
+        double candidateHigh = series.getHigh(candidate);
+        double candidateLow = series.getLow(candidate);
+        long candidateTime = series.getStartTime(candidate);
+
+        // Check for duplicate levels (same price already tracked)
+        for (SwingLevel lv : swingLevels) {
+            if (Math.abs(lv.price - candidateHigh) < 0.0001 || Math.abs(lv.price - candidateLow) < 0.0001) {
+                return; // Already tracking this price level
+            }
+        }
+
+        // Swing High: candidate high > all highs within 'strength' bars on each side
+        boolean isSwingHigh = true;
+        for (int j = 1; j <= strength && isSwingHigh; j++) {
+            if (series.getHigh(candidate - j) >= candidateHigh) isSwingHigh = false;
+        }
+        for (int j = 1; j <= strength && isSwingHigh; j++) {
+            if (series.getHigh(candidate + j) >= candidateHigh) isSwingHigh = false;
+        }
+        if (isSwingHigh) {
+            swingLevels.add(new SwingLevel(candidateHigh, true, candidateTime));
+            debug("Swing HIGH detected: " + fmt(candidateHigh));
+        }
+
+        // Swing Low: candidate low < all lows within 'strength' bars on each side
+        boolean isSwingLow = true;
+        for (int j = 1; j <= strength && isSwingLow; j++) {
+            if (series.getLow(candidate - j) <= candidateLow) isSwingLow = false;
+        }
+        for (int j = 1; j <= strength && isSwingLow; j++) {
+            if (series.getLow(candidate + j) <= candidateLow) isSwingLow = false;
+        }
+        if (isSwingLow) {
+            swingLevels.add(new SwingLevel(candidateLow, false, candidateTime));
+            debug("Swing LOW detected: " + fmt(candidateLow));
+        }
+    }
+
+    // ==================== PLOT LEVELS ====================
+
+    private void plotSwingLevels(DataSeries series, int index, long barTime)
+    {
+        double nearestHigh = Double.NaN;
+        double nearestLow = Double.NaN;
+
+        for (SwingLevel lv : swingLevels) {
+            if (lv.traded) continue;
+            if (lv.isHigh) {
+                if (Double.isNaN(nearestHigh) || Math.abs(series.getClose(index) - lv.price) < Math.abs(series.getClose(index) - nearestHigh)) {
+                    nearestHigh = lv.price;
+                }
+            } else {
+                if (Double.isNaN(nearestLow) || Math.abs(series.getClose(index) - lv.price) < Math.abs(series.getClose(index) - nearestLow)) {
+                    nearestLow = lv.price;
+                }
+            }
+        }
+
+        if (!Double.isNaN(nearestHigh)) series.setDouble(index, Values.NEAREST_HIGH, nearestHigh);
+        if (!Double.isNaN(nearestLow)) series.setDouble(index, Values.NEAREST_LOW, nearestLow);
+
+        // Draw lines periodically to avoid overdraw (every 10 bars)
+        if (index % 10 != 0) return;
+
+        for (SwingLevel lv : swingLevels) {
+            if (lv.traded) continue;
+            var path = lv.isHigh
+                ? getSettings().getPath(SWING_HIGH_PATH)
+                : getSettings().getPath(SWING_LOW_PATH);
+            if (path != null && path.isEnabled()) {
+                // Draw from detection time to current bar
+                addFigure(new Line(
+                    new Coordinate(lv.detectedTime, lv.price),
+                    new Coordinate(barTime, lv.price),
+                    path));
+            }
+        }
+    }
+
+    // ==================== STRATEGY LIFECYCLE ====================
+
+    @Override
+    public void onActivate(OrderContext ctx)
+    {
+        debug("Swing Reclaim Strategy activated");
+    }
+
+    @Override
+    public void onDeactivate(OrderContext ctx)
+    {
+        int position = ctx.getPosition();
+        if (position != 0) {
+            ctx.closeAtMarket();
+            debug("Strategy deactivated - closed position");
+        }
+        resetTradeState();
+    }
+
+    // ==================== SIGNAL HANDLER ====================
+
+    @Override
+    public void onSignal(OrderContext ctx, Object signal)
+    {
+        if (signal != Signals.RECLAIM_LONG && signal != Signals.RECLAIM_SHORT) return;
+
+        int position = ctx.getPosition();
+        // Don't enter if already in a position
+        if (position != 0) {
+            debug("Already in position, ignoring reclaim signal");
+            return;
+        }
+
+        var instr = ctx.getInstrument();
+        double tickSize = instr.getTickSize();
+        var settings = getSettings();
+        var series = ctx.getDataContext().getDataSeries();
+        int index = series.size() - 1;
+        long barTime = series.getStartTime(index);
+        int barTimeInt = getTimeInt(barTime);
+
+        // EOD gate
+        if (settings.getBoolean(EOD_ENABLED, true) &&
+            barTimeInt >= settings.getInteger(EOD_TIME, 1640)) {
+            debug("Past EOD time, blocking entry");
+            return;
+        }
+
+        int qty = settings.getInteger(CONTRACTS, 2);
+        int stopBufferTicks = settings.getInteger(STOP_BUFFER_TICKS, 4);
+        double stopBuffer = stopBufferTicks * tickSize;
+        double stopMinPts = settings.getDouble(STOP_MIN_PTS, 2.0);
+        double stopMaxPts = settings.getDouble(STOP_MAX_PTS, 40.0);
+        double tp1Pts = settings.getDouble(TP1_POINTS, 20.0);
+
+        isLongTrade = (signal == Signals.RECLAIM_LONG);
+
+        // Find the level that triggered this signal (most recently traded)
+        // RECLAIM_LONG comes from swing LOW (!isHigh), RECLAIM_SHORT comes from swing HIGH (isHigh)
+        SwingLevel triggerLevel = null;
+        for (SwingLevel lv : swingLevels) {
+            if (lv.traded && lv.isHigh != isLongTrade) {
+                triggerLevel = lv; // Last one marked traded
+            }
+        }
+
+        // Execute entry
+        if (isLongTrade) {
+            ctx.buy(qty);
+            entryPrice = instr.getLastPrice();
+
+            // Stop below sweep extreme
+            if (triggerLevel != null && !Double.isNaN(triggerLevel.sweepExtreme)) {
+                stopPrice = instr.round(triggerLevel.sweepExtreme - stopBuffer);
+            } else {
+                stopPrice = instr.round(entryPrice - stopMaxPts);
+            }
+
+            tp1Price = instr.round(entryPrice + tp1Pts);
+            bestPriceInTrade = entryPrice;
+
+        } else {
+            ctx.sell(qty);
+            entryPrice = instr.getLastPrice();
+
+            // Stop above sweep extreme
+            if (triggerLevel != null && !Double.isNaN(triggerLevel.sweepExtreme)) {
+                stopPrice = instr.round(triggerLevel.sweepExtreme + stopBuffer);
+            } else {
+                stopPrice = instr.round(entryPrice + stopMaxPts);
+            }
+
+            tp1Price = instr.round(entryPrice - tp1Pts);
+            bestPriceInTrade = entryPrice;
+        }
+
+        // Clamp stop distance
+        double dist = Math.abs(entryPrice - stopPrice);
+        if (dist < stopMinPts) {
+            stopPrice = isLongTrade
+                ? instr.round(entryPrice - stopMinPts)
+                : instr.round(entryPrice + stopMinPts);
+        }
+        if (dist > stopMaxPts) {
+            stopPrice = isLongTrade
+                ? instr.round(entryPrice - stopMaxPts)
+                : instr.round(entryPrice + stopMaxPts);
+        }
+
+        tp1Filled = false;
+        beActivated = false;
+        trailingActive = false;
+        trailStopPrice = Double.NaN;
+        tradesToday++;
+
+        debug(String.format("=== %s ENTRY === qty=%d, entry=%.2f, stop=%.2f, TP1=%.2f, sweepExtreme=%s",
+            isLongTrade ? "LONG" : "SHORT", qty, entryPrice, stopPrice, tp1Price,
+            triggerLevel != null ? fmt(triggerLevel.sweepExtreme) : "N/A"));
+    }
+
+    // ==================== BAR CLOSE (Trade Management) ====================
+
+    @Override
+    public void onBarClose(OrderContext ctx)
+    {
+        var series = ctx.getDataContext().getDataSeries();
+        int index = series.size() - 1;
+        long barTime = series.getStartTime(index);
+        int barTimeInt = getTimeInt(barTime);
+        var instr = ctx.getInstrument();
+        var settings = getSettings();
+
+        // ===== EOD Flatten =====
+        if (settings.getBoolean(EOD_ENABLED, true) &&
+            barTimeInt >= settings.getInteger(EOD_TIME, 1640) && !eodProcessed) {
+            int position = ctx.getPosition();
+            if (position != 0) {
+                ctx.closeAtMarket();
+                debug("EOD forced flat at " + barTimeInt);
+                resetTradeState();
+            }
+            eodProcessed = true;
+            return;
+        }
+
+        // ===== Position Management =====
+        int position = ctx.getPosition();
+        if (position == 0) {
+            if (entryPrice > 0) resetTradeState();
+            return;
+        }
+
+        double high = series.getHigh(index);
+        double low = series.getLow(index);
+        double close = series.getClose(index);
+        boolean isLong = position > 0;
+
+        // Track best price in trade
+        if (isLong) {
+            if (Double.isNaN(bestPriceInTrade) || high > bestPriceInTrade)
+                bestPriceInTrade = high;
+        } else {
+            if (Double.isNaN(bestPriceInTrade) || low < bestPriceInTrade)
+                bestPriceInTrade = low;
+        }
+
+        // ===== Determine effective stop =====
+        double effectiveStop = stopPrice;
+        if (!Double.isNaN(trailStopPrice) && trailingActive) {
+            if (isLong) effectiveStop = Math.max(effectiveStop, trailStopPrice);
+            else effectiveStop = Math.min(effectiveStop, trailStopPrice);
+        }
+
+        // ===== Stop Loss Check =====
+        if (isLong && low <= effectiveStop) {
+            ctx.closeAtMarket();
+            debug("LONG stopped at " + fmt(effectiveStop) +
+                (trailingActive ? " (trail)" : beActivated ? " (BE)" : " (initial)"));
+            resetTradeState();
+            return;
+        }
+        if (!isLong && high >= effectiveStop) {
+            ctx.closeAtMarket();
+            debug("SHORT stopped at " + fmt(effectiveStop) +
+                (trailingActive ? " (trail)" : beActivated ? " (BE)" : " (initial)"));
+            resetTradeState();
+            return;
+        }
+
+        // ===== TP1 Partial =====
+        int tp1Pct = settings.getInteger(TP1_PCT, 50);
+        if (!tp1Filled) {
+            boolean tp1Hit = (isLong && high >= tp1Price) || (!isLong && low <= tp1Price);
+            if (tp1Hit) {
+                int absPos = Math.abs(position);
+                int partialQty = (int) Math.ceil(absPos * tp1Pct / 100.0);
+
+                if (partialQty > 0 && partialQty < absPos) {
+                    if (isLong) ctx.sell(partialQty);
+                    else ctx.buy(partialQty);
+
+                    tp1Filled = true;
+                    debug(String.format("TP1 partial: %d contracts at %.2f", partialQty, tp1Price));
+
+                    // Move stop to breakeven after TP1
+                    if (!beActivated) {
+                        stopPrice = instr.round(entryPrice);
+                        beActivated = true;
+                        debug("Stop moved to breakeven: " + fmt(stopPrice));
+                    }
+                } else {
+                    // Single contract: full exit at TP1
+                    ctx.closeAtMarket();
+                    debug("Full exit at TP1: " + fmt(tp1Price));
+                    resetTradeState();
+                    return;
+                }
+            }
+        }
+
+        // ===== Runner Trailing Stop (after TP1) =====
+        if (tp1Filled && !trailingActive) {
+            trailingActive = true;
+            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0);
+            if (isLong) {
+                trailStopPrice = instr.round(bestPriceInTrade - trailDist);
+            } else {
+                trailStopPrice = instr.round(bestPriceInTrade + trailDist);
+            }
+            debug("Runner trailing activated at " + fmt(trailStopPrice));
+        }
+
+        if (trailingActive) {
+            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0);
+            if (isLong) {
+                double newTrail = instr.round(bestPriceInTrade - trailDist);
+                if (Double.isNaN(trailStopPrice) || newTrail > trailStopPrice) {
+                    trailStopPrice = newTrail;
+                }
+            } else {
+                double newTrail = instr.round(bestPriceInTrade + trailDist);
+                if (Double.isNaN(trailStopPrice) || newTrail < trailStopPrice) {
+                    trailStopPrice = newTrail;
+                }
+            }
+        }
+    }
+
+    // ==================== STATE RESET ====================
+
+    private void resetTradeState()
+    {
+        entryPrice = 0;
+        stopPrice = 0;
+        tp1Price = 0;
+        tp1Filled = false;
+        beActivated = false;
+        bestPriceInTrade = Double.NaN;
+        trailStopPrice = Double.NaN;
+        trailingActive = false;
+    }
+
+    // ==================== UTILITY ====================
+
+    private int getTimeInt(long time)
+    {
+        Calendar cal = Calendar.getInstance(NY_TZ);
+        cal.setTimeInMillis(time);
+        return cal.get(Calendar.HOUR_OF_DAY) * 100 + cal.get(Calendar.MINUTE);
+    }
+
+    private int getDayOfYear(long time)
+    {
+        Calendar cal = Calendar.getInstance(NY_TZ);
+        cal.setTimeInMillis(time);
+        return cal.get(Calendar.DAY_OF_YEAR) + cal.get(Calendar.YEAR) * 1000;
+    }
+
+    private String fmt(double val)
+    {
+        return String.format("%.2f", val);
+    }
+
+    // ==================== CLEAR STATE ====================
+    @Override
+    public void clearState()
+    {
+        super.clearState();
+        swingLevels.clear();
+        resetTradeState();
+        tradesToday = 0;
+        lastResetDay = -1;
+        eodProcessed = false;
+    }
+}

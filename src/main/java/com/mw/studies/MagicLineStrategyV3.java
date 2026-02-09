@@ -26,10 +26,10 @@ import com.motivewave.platform.sdk.study.StudyHeader;
  */
 @StudyHeader(
     namespace = "com.mw.studies",
-    id = "MAGIC_LINE_VWAP",
+    id = "MAGIC_LINE_V3_R2",
     rb = "com.mw.studies.nls.strings",
-    name = "MAGIC_LINE",
-    label = "LBL_MAGIC_LINE",
+    name = "MAGIC_LINE_V3_WIDE_ZONE",
+    label = "LBL_MAGIC_LINE_V3",
     desc = "DESC_MAGIC_LINE",
     menu = "MW Generated",
     overlay = true,
@@ -41,7 +41,7 @@ import com.motivewave.platform.sdk.study.StudyHeader;
     supportsRealizedPL = true,
     supportsTotalPL = true
 )
-public class MagicLineStrategy extends Study
+public class MagicLineStrategyV3 extends Study
 {
     // ==================== Settings Keys ====================
     private static final String LENGTH = "length";
@@ -55,8 +55,6 @@ public class MagicLineStrategy extends Study
     private static final String TRADE_END = "tradeEnd";
     private static final String MAX_TRADES_PER_DAY = "maxTradesPerDay";
     private static final String ONE_TRADE_AT_A_TIME = "oneTradeAtATime";
-    private static final String DAILY_LOSS_LIMIT_ENABLED = "dailyLossLimitEnabled";
-    private static final String DAILY_LOSS_LIMIT_PTS = "dailyLossLimitPts";
 
     private static final String STOPLOSS_ENABLED = "stoplossEnabled";
     private static final String STOPLOSS_MODE = "stoplossMode";
@@ -80,16 +78,11 @@ public class MagicLineStrategy extends Study
     private static final String UP_COLOR = "upColor";
     private static final String DOWN_COLOR = "downColor";
 
-    // VWAP Filter
-    private static final String VWAP_FILTER_ENABLED = "vwapFilterEnabled";
-    private static final String SHOW_VWAP = "showVwap";
-    private static final String VWAP_LINE = "vwapLine";
-
     // ==================== Constants ====================
     private static final int STOP_FIXED = 0;
     private static final int STOP_STRUCTURAL = 1;
 
-    enum Values { LB, LOWER_BAND, VWAP }
+    enum Values { LB, LOWER_BAND }
 
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
 
@@ -105,13 +98,6 @@ public class MagicLineStrategy extends Study
     private double tp2Price = 0.0;
     private int tradesToday = 0;
     private int lastResetDay = -1;
-    private double dailyRealizedPnl = 0.0;
-    private boolean dailyLossLimitHit = false;
-
-    // ==================== VWAP State ====================
-    private double vwapCumPV = 0.0;  // Cumulative (Price * Volume)
-    private double vwapCumVol = 0.0; // Cumulative Volume
-    private int vwapResetDay = -1;   // Day when VWAP was last reset
 
     // ==================== INITIALIZE ====================
     @Override
@@ -125,15 +111,9 @@ public class MagicLineStrategy extends Study
 
         var grpEntry = tabLB.addGroup("Entry Conditions");
         grpEntry.addRow(new IntegerDescriptor(TOUCH_TOLERANCE_TICKS, "Touch Tolerance Below LB (ticks)", 4, 1, 20, 1));
-        grpEntry.addRow(new DoubleDescriptor(ZONE_BUFFER_PTS, "Entry Zone Buffer Above LB (points)", 2.0, 0.25, 20.0, 0.25));
+        grpEntry.addRow(new DoubleDescriptor(ZONE_BUFFER_PTS, "Entry Zone Buffer Above LB (points)", 3.0, 0.25, 20.0, 0.25));
         grpEntry.addRow(new DoubleDescriptor(CAME_FROM_PTS, "Came-From Distance (points above LB)", 5.0, 0.5, 50.0, 0.5));
         grpEntry.addRow(new IntegerDescriptor(CAME_FROM_LOOKBACK, "Came-From Lookback (bars)", 5, 2, 20, 1));
-
-        var grpFilter = tabLB.addGroup("Filters");
-        grpFilter.addRow(new BooleanDescriptor(VWAP_FILTER_ENABLED, "VWAP Filter (Long only above VWAP)", true));
-        grpFilter.addRow(new BooleanDescriptor(SHOW_VWAP, "Show VWAP Line", true));
-        grpFilter.addRow(new PathDescriptor(VWAP_LINE, "VWAP Line",
-            defaults.getBlueLine(), 1.5f, null, true, false, false));
 
         var grpDisplay = tabLB.addGroup("Display");
         grpDisplay.addRow(new PathDescriptor(LB_LINE, "LB Line",
@@ -150,15 +130,13 @@ public class MagicLineStrategy extends Study
         var grpLimits = tabSess.addGroup("Limits");
         grpLimits.addRow(new IntegerDescriptor(MAX_TRADES_PER_DAY, "Max Trades Per Day", 6, 1, 20, 1));
         grpLimits.addRow(new BooleanDescriptor(ONE_TRADE_AT_A_TIME, "One Trade At A Time", true));
-        grpLimits.addRow(new BooleanDescriptor(DAILY_LOSS_LIMIT_ENABLED, "Enable Daily Loss Limit", false));
-        grpLimits.addRow(new DoubleDescriptor(DAILY_LOSS_LIMIT_PTS, "Daily Loss Limit (points x contracts)", 50.0, 1.0, 5000.0, 0.5));
 
         var tabRisk = sd.addTab("Risk");
         var grpStop = tabRisk.addGroup("Stop Loss");
         grpStop.addRow(new BooleanDescriptor(STOPLOSS_ENABLED, "Enable Stop Loss", true));
         grpStop.addRow(new IntegerDescriptor(STOPLOSS_MODE, "Stop Mode (0=Fixed, 1=Structural+Buffer)", 1, 0, 1, 1));
-        grpStop.addRow(new IntegerDescriptor(STOP_BUFFER_TICKS, "Stop Buffer/Distance (ticks)", 20, 1, 200, 1));
-        grpStop.addRow(new IntegerDescriptor(CONTRACTS, "Contracts", 10, 1, 100, 1));  // Original: 10 contracts for unique identification
+        grpStop.addRow(new IntegerDescriptor(STOP_BUFFER_TICKS, "Stop Buffer/Distance (ticks)", 15, 1, 200, 1));
+        grpStop.addRow(new IntegerDescriptor(CONTRACTS, "Contracts", 13, 1, 100, 1));  // V3: 13 contracts for unique identification
         var grpBE = tabRisk.addGroup("Breakeven");
         grpBE.addRow(new BooleanDescriptor(BE_ENABLED, "Enable Breakeven Trigger", true));
         grpBE.addRow(new DoubleDescriptor(BE_TRIGGER_PTS, "Breakeven Trigger (points profit)", 5.0, 0.5, 50.0, 0.5));
@@ -183,8 +161,6 @@ public class MagicLineStrategy extends Study
         var desc = createRD();
         desc.exportValue(new ValueDescriptor(Values.LB, "Magic Line (LB)", new String[] { LB_LINE }));
         desc.declarePath(Values.LB, LB_LINE);
-        desc.exportValue(new ValueDescriptor(Values.VWAP, "VWAP", new String[] { VWAP_LINE }));
-        desc.declarePath(Values.VWAP, VWAP_LINE);
     }
 
     // ==================== LIFECYCLE ====================
@@ -207,11 +183,6 @@ public class MagicLineStrategy extends Study
         super.clearState();
         tradesToday = 0;
         lastResetDay = -1;
-        dailyRealizedPnl = 0.0;
-        dailyLossLimitHit = false;
-        vwapCumPV = 0.0;
-        vwapCumVol = 0.0;
-        vwapResetDay = -1;
         resetTradeState();
     }
 
@@ -256,32 +227,6 @@ public class MagicLineStrategy extends Study
         }
         if (lb == Double.MIN_VALUE) return;
         series.setDouble(index, Values.LB, lb);
-
-        // ==================== VWAP Calculation ====================
-        // Reset VWAP at start of each day
-        long barTime = series.getStartTime(index);
-        int barDay = getDayOfYear(barTime, NY_TZ);
-        if (barDay != vwapResetDay) {
-            vwapCumPV = 0.0;
-            vwapCumVol = 0.0;
-            vwapResetDay = barDay;
-        }
-
-        // Calculate typical price and accumulate
-        double high = series.getHigh(index);
-        double low = series.getLow(index);
-        double closePrice = series.getClose(index);
-        double volume = series.getVolume(index);
-
-        if (volume > 0) {
-            double typicalPrice = (high + low + closePrice) / 3.0;
-            vwapCumPV += typicalPrice * volume;
-            vwapCumVol += volume;
-        }
-
-        // Calculate and store VWAP
-        double vwap = (vwapCumVol > 0) ? vwapCumPV / vwapCumVol : closePrice;
-        series.setDouble(index, Values.VWAP, vwap);
 
         // Bar coloring (same approach as Vector strategy)
         double close = series.getClose(index);
@@ -328,8 +273,6 @@ public class MagicLineStrategy extends Study
         int barDay = getDayOfYear(barTime, NY_TZ);
         if (barDay != lastResetDay) {
             tradesToday = 0;
-            dailyRealizedPnl = 0.0;
-            dailyLossLimitHit = false;
             lastResetDay = barDay;
         }
 
@@ -342,9 +285,8 @@ public class MagicLineStrategy extends Study
             info("=== EOD FLATTEN ===");
             double exitPrice = series.getClose(index);
             double exitPnl = (exitPrice - entryPrice) * position;
-            dailyRealizedPnl += exitPnl;
             ctx.closeAtMarket();
-            info("FILL: CLOSE " + position + " @ " + fmt(exitPrice) + " | Exit P&L: " + fmt(exitPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+            info("FILL: CLOSE " + position + " @ " + fmt(exitPrice) + " | Exit P&L: " + fmt(exitPnl) + " pts");
             resetTradeState();
             return;
         }
@@ -357,9 +299,8 @@ public class MagicLineStrategy extends Study
             info("=== TIME EXIT ===");
             double exitPrice = series.getClose(index);
             double exitPnl = (exitPrice - entryPrice) * position;
-            dailyRealizedPnl += exitPnl;
             ctx.closeAtMarket();
-            info("FILL: CLOSE " + position + " @ " + fmt(exitPrice) + " | Exit P&L: " + fmt(exitPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+            info("FILL: CLOSE " + position + " @ " + fmt(exitPrice) + " | Exit P&L: " + fmt(exitPnl) + " pts");
             resetTradeState();
             return;
         }
@@ -390,34 +331,8 @@ public class MagicLineStrategy extends Study
             boolean inWindow = !sessionEnabled || (timeInt >= tradeStart && timeInt < tradeEnd);
             if (!inWindow || tradesToday >= maxTrades) return;
 
-            // Daily loss limit check
-            boolean dailyLossEnabled = settings.getBoolean(DAILY_LOSS_LIMIT_ENABLED, false);
-            if (dailyLossEnabled) {
-                double dailyLossLimit = settings.getDouble(DAILY_LOSS_LIMIT_PTS, 50.0);
-                if (dailyRealizedPnl <= -dailyLossLimit) {
-                    if (!dailyLossLimitHit) {
-                        dailyLossLimitHit = true;
-                        info("=== DAILY LOSS LIMIT REACHED === P&L: " + fmt(dailyRealizedPnl) + " pts | Limit: -" + fmt(dailyLossLimit) + " pts");
-                    }
-                    return;
-                }
-            }
-
             // Bullish bias required (close >= LB)
             if (close < lb) return;
-
-            // VWAP Filter: Only take longs if price is above VWAP
-            boolean vwapFilterEnabled = settings.getBoolean(VWAP_FILTER_ENABLED, true);
-            if (vwapFilterEnabled) {
-                Double vwapObj = series.getDouble(index, Values.VWAP);
-                if (vwapObj != null && !Double.isNaN(vwapObj)) {
-                    double vwap = vwapObj;
-                    if (close < vwap) {
-                        // Price below VWAP - skip this entry
-                        return;
-                    }
-                }
-            }
 
             Instrument instr = ctx.getInstrument();
             double tickSize = instr.getTickSize();
@@ -557,10 +472,8 @@ public class MagicLineStrategy extends Study
                     info("=== TAKING PARTIAL at TP1 ===");
                     info("TP1: " + fmt(tp1Price) + " | Closing " + halfQty + " of " + position + " contracts");
                     ctx.sell(halfQty);
-                    // Use tp1Price as fill - backtester fills at trigger level
                     double partialPnl = (tp1Price - entryPrice) * halfQty;
-                    dailyRealizedPnl += partialPnl;
-                    info("FILL: SELL " + halfQty + " @ " + fmt(tp1Price) + " | Partial P&L: " + fmt(partialPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+                    info("FILL: SELL " + halfQty + " @ " + fmt(tp1Price) + " | Partial P&L: " + fmt(partialPnl) + " pts");
                 }
             }
             partialTaken = true;
@@ -586,11 +499,9 @@ public class MagicLineStrategy extends Study
             info("=== " + stopType + " HIT ===");
             info("Stop: " + fmt(currentStop) + " | Low: " + fmt(low));
             int remainingQty = position;
-            // Use stop price as fill - backtester fills at trigger level
             double exitPnl = (currentStop - entryPrice) * remainingQty;
-            dailyRealizedPnl += exitPnl;
             ctx.closeAtMarket();
-            info("FILL: CLOSE " + remainingQty + " @ " + fmt(currentStop) + " | Exit P&L: " + fmt(exitPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+            info("FILL: CLOSE " + remainingQty + " @ " + fmt(currentStop) + " | Exit P&L: " + fmt(exitPnl) + " pts");
             resetTradeState();
             return;
         }
@@ -604,9 +515,8 @@ public class MagicLineStrategy extends Study
                 info("Close " + fmt(close) + " < LB " + fmt(lb));
                 int remainingQty = position;
                 double exitPnl = (close - entryPrice) * remainingQty;
-                dailyRealizedPnl += exitPnl;
                 ctx.closeAtMarket();
-                info("FILL: CLOSE " + remainingQty + " @ " + fmt(close) + " | Exit P&L: " + fmt(exitPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+                info("FILL: CLOSE " + remainingQty + " @ " + fmt(close) + " | Exit P&L: " + fmt(exitPnl) + " pts");
                 resetTradeState();
                 return;
             }
@@ -619,11 +529,9 @@ public class MagicLineStrategy extends Study
             info("=== TP2 HIT ===");
             info("TP2: " + fmt(tp2Price));
             int remainingQty = position;
-            // Use tp2Price as fill - backtester fills at trigger level
             double exitPnl = (tp2Price - entryPrice) * remainingQty;
-            dailyRealizedPnl += exitPnl;
             ctx.closeAtMarket();
-            info("FILL: CLOSE " + remainingQty + " @ " + fmt(tp2Price) + " | Exit P&L: " + fmt(exitPnl) + " pts | Day P&L: " + fmt(dailyRealizedPnl) + " pts");
+            info("FILL: CLOSE " + remainingQty + " @ " + fmt(tp2Price) + " | Exit P&L: " + fmt(exitPnl) + " pts");
             resetTradeState();
             return;
         }
