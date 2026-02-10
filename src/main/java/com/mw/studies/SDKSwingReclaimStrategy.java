@@ -60,6 +60,8 @@ public class SDKSwingReclaimStrategy extends Study
     private static final String STOP_BUFFER_TICKS = "stopBufferTicks";
     private static final String STOP_MIN_PTS = "stopMinPts";
     private static final String STOP_MAX_PTS = "stopMaxPts";
+    private static final String BE_ENABLED = "beEnabled";
+    private static final String BE_TRIGGER_PTS = "beTriggerPts";
     private static final String TP1_POINTS = "tp1Points";
     private static final String TP1_PCT = "tp1Pct";
     private static final String TRAIL_POINTS = "trailPoints";
@@ -155,6 +157,10 @@ public class SDKSwingReclaimStrategy extends Study
         grp.addRow(new IntegerDescriptor(STOP_BUFFER_TICKS, "Stop Buffer (ticks beyond sweep extreme)", 4, 0, 50, 1));
         grp.addRow(new DoubleDescriptor(STOP_MIN_PTS, "Min Stop Distance (pts)", 2.0, 0.25, 50.0, 0.25));
         grp.addRow(new DoubleDescriptor(STOP_MAX_PTS, "Max Stop Distance (pts)", 40.0, 1.0, 200.0, 0.5));
+
+        grp = tab.addGroup("Breakeven");
+        grp.addRow(new BooleanDescriptor(BE_ENABLED, "Move Stop to Breakeven", true));
+        grp.addRow(new DoubleDescriptor(BE_TRIGGER_PTS, "BE Trigger (points in profit)", 10.0, 0.25, 100.0, 0.25));
 
         tab = sd.addTab("Targets");
         grp = tab.addGroup("TP1 (Partial)");
@@ -541,6 +547,17 @@ public class SDKSwingReclaimStrategy extends Study
             return;
         }
 
+        // Move stop to breakeven
+        if (!beActivated && settings.getBoolean(BE_ENABLED, true)) {
+            double beTrigger = settings.getDouble(BE_TRIGGER_PTS, 10.0);
+            double profitPts = isLong ? (bestPriceInTrade - entryPrice) : (entryPrice - bestPriceInTrade);
+            if (profitPts >= beTrigger) {
+                stopPrice = instr.round(entryPrice);
+                beActivated = true;
+                debug("Stop to BE at " + fmt(stopPrice) + " (profit reached " + fmt(profitPts) + " pts)");
+            }
+        }
+
         // TP1 Partial
         int tp1Pct = settings.getInteger(TP1_PCT, 50);
         if (!tp1Filled) {
@@ -553,11 +570,6 @@ public class SDKSwingReclaimStrategy extends Study
                     else ctx.buy(partialQty);
                     tp1Filled = true;
                     debug("TP1: " + partialQty + " contracts at " + fmt(tp1Price));
-                    if (!beActivated) {
-                        stopPrice = instr.round(entryPrice);
-                        beActivated = true;
-                        debug("Stop to BE: " + fmt(stopPrice));
-                    }
                 } else {
                     ctx.closeAtMarket();
                     debug("Full exit at TP1");
