@@ -80,16 +80,17 @@ public class MagicLineStrategy extends Study
     private static final String UP_COLOR = "upColor";
     private static final String DOWN_COLOR = "downColor";
 
-    // VWAP Filter
-    private static final String VWAP_FILTER_ENABLED = "vwapFilterEnabled";
-    private static final String SHOW_VWAP = "showVwap";
-    private static final String VWAP_LINE = "vwapLine";
+    // EMA Filter
+    private static final String EMA_FILTER_ENABLED = "emaFilterEnabled";
+    private static final String EMA_PERIOD = "emaPeriod";
+    private static final String SHOW_EMA = "showEma";
+    private static final String EMA_LINE = "emaLine";
 
     // ==================== Constants ====================
     private static final int STOP_FIXED = 0;
     private static final int STOP_STRUCTURAL = 1;
 
-    enum Values { LB, LOWER_BAND, VWAP }
+    enum Values { LB, LOWER_BAND, EMA }
 
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
 
@@ -108,11 +109,6 @@ public class MagicLineStrategy extends Study
     private double dailyRealizedPnl = 0.0;
     private boolean dailyLossLimitHit = false;
 
-    // ==================== VWAP State ====================
-    private double vwapCumPV = 0.0;  // Cumulative (Price * Volume)
-    private double vwapCumVol = 0.0; // Cumulative Volume
-    private int vwapResetDay = -1;   // Day when VWAP was last reset
-
     // ==================== INITIALIZE ====================
     @Override
     public void initialize(Defaults defaults)
@@ -130,9 +126,10 @@ public class MagicLineStrategy extends Study
         grpEntry.addRow(new IntegerDescriptor(CAME_FROM_LOOKBACK, "Came-From Lookback (bars)", 5, 2, 20, 1));
 
         var grpFilter = tabLB.addGroup("Filters");
-        grpFilter.addRow(new BooleanDescriptor(VWAP_FILTER_ENABLED, "VWAP Filter (Long only above VWAP)", true));
-        grpFilter.addRow(new BooleanDescriptor(SHOW_VWAP, "Show VWAP Line", true));
-        grpFilter.addRow(new PathDescriptor(VWAP_LINE, "VWAP Line",
+        grpFilter.addRow(new BooleanDescriptor(EMA_FILTER_ENABLED, "EMA Filter (Long only above EMA)", true));
+        grpFilter.addRow(new IntegerDescriptor(EMA_PERIOD, "EMA Period", 21, 5, 200, 1));
+        grpFilter.addRow(new BooleanDescriptor(SHOW_EMA, "Show EMA Line", true));
+        grpFilter.addRow(new PathDescriptor(EMA_LINE, "EMA Line",
             defaults.getBlueLine(), 1.5f, null, true, false, false));
 
         var grpDisplay = tabLB.addGroup("Display");
@@ -141,6 +138,8 @@ public class MagicLineStrategy extends Study
         grpDisplay.addRow(new BooleanDescriptor(SHOW_BAR_COLORING, "Bar Coloring", true));
         grpDisplay.addRow(new ColorDescriptor(UP_COLOR, "Up Bar Color", defaults.getGreen()));
         grpDisplay.addRow(new ColorDescriptor(DOWN_COLOR, "Down Bar Color", defaults.getRed()));
+        grpDisplay.addRow(new MarkerDescriptor(Inputs.UP_MARKER, "Long Entry",
+            Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getGreen(), defaults.getLineColor(), true, true));
 
         var tabSess = sd.addTab("Sessions");
         var grpSess = tabSess.addGroup("Trade Window");
@@ -178,13 +177,13 @@ public class MagicLineStrategy extends Study
         grpEOD.addRow(new BooleanDescriptor(EOD_FLAT_ENABLED, "Force Flat EOD", true));
         grpEOD.addRow(new IntegerDescriptor(EOD_TIME, "EOD Flatten Time (HHMM)", 1640, 0, 2359, 1));
 
-        sd.addQuickSettings(CONTRACTS, TP1_R, TP2_R, TOUCH_TOLERANCE_TICKS);
+        sd.addQuickSettings(CONTRACTS, TP1_R, TP2_R, EMA_PERIOD, TOUCH_TOLERANCE_TICKS);
 
         var desc = createRD();
         desc.exportValue(new ValueDescriptor(Values.LB, "Magic Line (LB)", new String[] { LB_LINE }));
         desc.declarePath(Values.LB, LB_LINE);
-        desc.exportValue(new ValueDescriptor(Values.VWAP, "VWAP", new String[] { VWAP_LINE }));
-        desc.declarePath(Values.VWAP, VWAP_LINE);
+        desc.exportValue(new ValueDescriptor(Values.EMA, "EMA", new String[] { EMA_LINE }));
+        desc.declarePath(Values.EMA, EMA_LINE);
     }
 
     // ==================== LIFECYCLE ====================
@@ -209,9 +208,6 @@ public class MagicLineStrategy extends Study
         lastResetDay = -1;
         dailyRealizedPnl = 0.0;
         dailyLossLimitHit = false;
-        vwapCumPV = 0.0;
-        vwapCumVol = 0.0;
-        vwapResetDay = -1;
         resetTradeState();
     }
 
@@ -257,31 +253,27 @@ public class MagicLineStrategy extends Study
         if (lb == Double.MIN_VALUE) return;
         series.setDouble(index, Values.LB, lb);
 
-        // ==================== VWAP Calculation ====================
-        // Reset VWAP at start of each day
-        long barTime = series.getStartTime(index);
-        int barDay = getDayOfYear(barTime, NY_TZ);
-        if (barDay != vwapResetDay) {
-            vwapCumPV = 0.0;
-            vwapCumVol = 0.0;
-            vwapResetDay = barDay;
-        }
-
-        // Calculate typical price and accumulate
-        double high = series.getHigh(index);
-        double low = series.getLow(index);
+        // ==================== EMA Calculation ====================
+        int emaPeriod = settings.getInteger(EMA_PERIOD, 21);
         double closePrice = series.getClose(index);
-        double volume = series.getVolume(index);
-
-        if (volume > 0) {
-            double typicalPrice = (high + low + closePrice) / 3.0;
-            vwapCumPV += typicalPrice * volume;
-            vwapCumVol += volume;
+        if (index < emaPeriod) {
+            // Not enough bars for EMA yet
+            series.setDouble(index, Values.EMA, closePrice);
+        } else {
+            Double prevEma = series.getDouble(index - 1, Values.EMA);
+            if (prevEma == null || Double.isNaN(prevEma)) {
+                // Seed EMA with SMA
+                double sum = 0;
+                for (int i = index - emaPeriod + 1; i <= index; i++) {
+                    sum += series.getClose(i);
+                }
+                series.setDouble(index, Values.EMA, sum / emaPeriod);
+            } else {
+                double k = 2.0 / (emaPeriod + 1);
+                double ema = closePrice * k + prevEma * (1 - k);
+                series.setDouble(index, Values.EMA, ema);
+            }
         }
-
-        // Calculate and store VWAP
-        double vwap = (vwapCumVol > 0) ? vwapCumPV / vwapCumVol : closePrice;
-        series.setDouble(index, Values.VWAP, vwap);
 
         // Bar coloring (same approach as Vector strategy)
         double close = series.getClose(index);
@@ -406,14 +398,12 @@ public class MagicLineStrategy extends Study
             // Bullish bias required (close >= LB)
             if (close < lb) return;
 
-            // VWAP Filter: Only take longs if price is above VWAP
-            boolean vwapFilterEnabled = settings.getBoolean(VWAP_FILTER_ENABLED, true);
-            if (vwapFilterEnabled) {
-                Double vwapObj = series.getDouble(index, Values.VWAP);
-                if (vwapObj != null && !Double.isNaN(vwapObj)) {
-                    double vwap = vwapObj;
-                    if (close < vwap) {
-                        // Price below VWAP - skip this entry
+            // EMA Filter: Only take longs if price is above EMA
+            boolean emaFilterEnabled = settings.getBoolean(EMA_FILTER_ENABLED, true);
+            if (emaFilterEnabled) {
+                Double emaObj = series.getDouble(index, Values.EMA);
+                if (emaObj != null && !Double.isNaN(emaObj)) {
+                    if (close < emaObj) {
                         return;
                     }
                 }
