@@ -1,5 +1,8 @@
 package com.mw.studies;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -104,6 +107,10 @@ public class SDKSwingReclaimStrategy extends Study
 
     // ==================== Constants ====================
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
+    private static final String REGIME_FILE = System.getProperty("user.home")
+        + "/MotiveWave Extensions/volatility_regime.json";
+    private static final long REGIME_RELOAD_MS = 30 * 60 * 1000; // reload every 30 min
+    private static final long REGIME_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h staleness limit
 
     // ==================== State ====================
     private List<SwingLevel> swingLevels = new ArrayList<>();
@@ -123,6 +130,12 @@ public class SDKSwingReclaimStrategy extends Study
     // EOD tracking
     private int lastResetDay = -1;
     private boolean eodProcessed = false;
+
+    // Volatility regime overrides
+    private double regimeStopMult = 1.0;
+    private double regimeTargetMult = 1.0;
+    private String regimeName = "Normal";
+    private long regimeLastLoadTime = 0;
 
     // ==================== INITIALIZE ====================
     @Override
@@ -371,6 +384,7 @@ public class SDKSwingReclaimStrategy extends Study
     @Override
     public void onActivate(OrderContext ctx)
     {
+        loadRegimeOverrides();
         debug("SDK Swing Reclaim Strategy activated");
     }
 
@@ -415,9 +429,9 @@ public class SDKSwingReclaimStrategy extends Study
         int qty = settings.getInteger(CONTRACTS, 2);
         int stopBufferTicks = settings.getInteger(STOP_BUFFER_TICKS, 4);
         double stopBuffer = stopBufferTicks * tickSize;
-        double stopMinPts = settings.getDouble(STOP_MIN_PTS, 2.0);
-        double stopMaxPts = settings.getDouble(STOP_MAX_PTS, 40.0);
-        double tp1Pts = settings.getDouble(TP1_POINTS, 20.0);
+        double stopMinPts = settings.getDouble(STOP_MIN_PTS, 2.0) * regimeStopMult;
+        double stopMaxPts = settings.getDouble(STOP_MAX_PTS, 40.0) * regimeStopMult;
+        double tp1Pts = settings.getDouble(TP1_POINTS, 20.0) * regimeTargetMult;
 
         isLongTrade = (signal == Signals.RECLAIM_LONG);
 
@@ -469,8 +483,9 @@ public class SDKSwingReclaimStrategy extends Study
         trailingActive = false;
         trailStopPrice = Double.NaN;
 
-        debug(String.format("=== %s ENTRY === qty=%d, entry=%.2f, stop=%.2f, TP1=%.2f",
-            isLongTrade ? "LONG" : "SHORT", qty, entryPrice, stopPrice, tp1Price));
+        debug(String.format("=== %s ENTRY === qty=%d, entry=%.2f, stop=%.2f, TP1=%.2f [regime=%s, stopX=%.2f, tgtX=%.2f]",
+            isLongTrade ? "LONG" : "SHORT", qty, entryPrice, stopPrice, tp1Price,
+            regimeName, regimeStopMult, regimeTargetMult));
     }
 
     // ==================== BAR CLOSE (Strategy-level — trade management) ====================
@@ -478,6 +493,12 @@ public class SDKSwingReclaimStrategy extends Study
     @Override
     public void onBarClose(OrderContext ctx)
     {
+        // Periodically reload regime overrides
+        long now = System.currentTimeMillis();
+        if (now - regimeLastLoadTime > REGIME_RELOAD_MS) {
+            loadRegimeOverrides();
+        }
+
         // Refresh figures (same as study-level onBarClose, safe if called twice)
         calculateValues(ctx.getDataContext());
 
@@ -549,7 +570,7 @@ public class SDKSwingReclaimStrategy extends Study
 
         // Move stop to breakeven
         if (!beActivated && settings.getBoolean(BE_ENABLED, true)) {
-            double beTrigger = settings.getDouble(BE_TRIGGER_PTS, 10.0);
+            double beTrigger = settings.getDouble(BE_TRIGGER_PTS, 10.0) * regimeTargetMult;
             double profitPts = isLong ? (bestPriceInTrade - entryPrice) : (entryPrice - bestPriceInTrade);
             if (profitPts >= beTrigger) {
                 stopPrice = instr.round(entryPrice);
@@ -582,13 +603,13 @@ public class SDKSwingReclaimStrategy extends Study
         // Runner Trailing Stop
         if (tp1Filled && !trailingActive) {
             trailingActive = true;
-            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0);
+            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0) * regimeTargetMult;
             trailStopPrice = isLong
                 ? instr.round(bestPriceInTrade - trailDist)
                 : instr.round(bestPriceInTrade + trailDist);
         }
         if (trailingActive) {
-            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0);
+            double trailDist = settings.getDouble(TRAIL_POINTS, 15.0) * regimeTargetMult;
             if (isLong) {
                 double newTrail = instr.round(bestPriceInTrade - trailDist);
                 if (Double.isNaN(trailStopPrice) || newTrail > trailStopPrice) trailStopPrice = newTrail;
@@ -611,6 +632,90 @@ public class SDKSwingReclaimStrategy extends Study
         bestPriceInTrade = Double.NaN;
         trailStopPrice = Double.NaN;
         trailingActive = false;
+    }
+
+    // ==================== VOLATILITY REGIME ====================
+
+    private void loadRegimeOverrides()
+    {
+        regimeLastLoadTime = System.currentTimeMillis();
+        File file = new File(REGIME_FILE);
+        debug("Regime file path: " + file.getAbsolutePath() + " exists=" + file.exists());
+        if (!file.exists()) {
+            regimeStopMult = 1.0;
+            regimeTargetMult = 1.0;
+            regimeName = "Normal";
+            debug("Regime file not found, using defaults (1.0x)");
+            return;
+        }
+
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String json = sb.toString();
+
+            double stopMult = parseJsonDouble(json, "stop_multiplier", 1.0);
+            double targetMult = parseJsonDouble(json, "target_multiplier", 1.0);
+            String regime = parseJsonString(json, "regime", "Normal");
+            String timestamp = parseJsonString(json, "timestamp", "");
+
+            // Check freshness: if timestamp can't be parsed or is too old, use defaults
+            if (!timestamp.isEmpty()) {
+                long fileAge = file.lastModified();
+                if (System.currentTimeMillis() - fileAge > REGIME_MAX_AGE_MS) {
+                    debug("Regime file is stale (>24h), using defaults");
+                    regimeStopMult = 1.0;
+                    regimeTargetMult = 1.0;
+                    regimeName = "Stale";
+                    return;
+                }
+            }
+
+            regimeStopMult = stopMult;
+            regimeTargetMult = targetMult;
+            regimeName = regime;
+            debug(String.format("Regime loaded: %s (stop=%.2fx, target=%.2fx)",
+                regimeName, regimeStopMult, regimeTargetMult));
+        } catch (Exception e) {
+            debug("Failed to load regime file: " + e.getMessage());
+            regimeStopMult = 1.0;
+            regimeTargetMult = 1.0;
+            regimeName = "Error";
+        }
+    }
+
+    private double parseJsonDouble(String json, String key, double defaultVal)
+    {
+        String pattern = "\"" + key + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) return defaultVal;
+        int colon = json.indexOf(':', idx + pattern.length());
+        if (colon < 0) return defaultVal;
+        int start = colon + 1;
+        while (start < json.length() && json.charAt(start) == ' ') start++;
+        int end = start;
+        while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '.' || json.charAt(end) == '-')) end++;
+        if (end == start) return defaultVal;
+        try {
+            return Double.parseDouble(json.substring(start, end));
+        } catch (NumberFormatException e) {
+            return defaultVal;
+        }
+    }
+
+    private String parseJsonString(String json, String key, String defaultVal)
+    {
+        String pattern = "\"" + key + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) return defaultVal;
+        int colon = json.indexOf(':', idx + pattern.length());
+        if (colon < 0) return defaultVal;
+        int openQuote = json.indexOf('"', colon + 1);
+        if (openQuote < 0) return defaultVal;
+        int closeQuote = json.indexOf('"', openQuote + 1);
+        if (closeQuote < 0) return defaultVal;
+        return json.substring(openQuote + 1, closeQuote);
     }
 
     // ==================== UTILITY ====================
@@ -644,5 +749,9 @@ public class SDKSwingReclaimStrategy extends Study
         resetTradeState();
         lastResetDay = -1;
         eodProcessed = false;
+        regimeStopMult = 1.0;
+        regimeTargetMult = 1.0;
+        regimeName = "Normal";
+        regimeLastLoadTime = 0;
     }
 }
