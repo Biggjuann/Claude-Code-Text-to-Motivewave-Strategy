@@ -264,7 +264,36 @@ def analyze_regime(asset_df, vix_close, vix9d_close=None):
 # OUTPUT
 # =============================================================================
 
-def build_output(regime, regime_bucket, composite, mults, details):
+# VIX hysteresis filter thresholds
+VIX_BLOCK_ABOVE = 30.0   # stop trading when VIX closes above this
+VIX_RESUME_BELOW = 20.0  # resume trading when VIX closes below this
+
+
+def compute_vix_filter(vix_close, previous_blocked=False):
+    """
+    Compute VIX hysteresis filter state.
+    Once VIX > VIX_BLOCK_ABOVE, blocked=True until VIX < VIX_RESUME_BELOW.
+    """
+    if previous_blocked:
+        # Currently blocked — only resume when VIX drops below threshold
+        blocked = vix_close >= VIX_RESUME_BELOW
+    else:
+        # Currently active — block when VIX rises above threshold
+        blocked = vix_close > VIX_BLOCK_ABOVE
+    return blocked
+
+
+def load_previous_vix_state(path):
+    """Read previous vix_blocked state from existing regime file."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("vix_blocked", False)
+    except Exception:
+        return False
+
+
+def build_output(regime, regime_bucket, composite, mults, details, vix_blocked):
     """Build the JSON output dict."""
     from datetime import timezone
     now = datetime.now().astimezone()
@@ -276,11 +305,12 @@ def build_output(regime, regime_bucket, composite, mults, details):
         "composite_score": round(composite, 4),
         "stop_multiplier": mults["stop"],
         "target_multiplier": mults["target"],
+        "vix_blocked": vix_blocked,
         "details": details,
     }
 
 
-def print_summary(regime, composite, mults, details, signals, warnings):
+def print_summary(regime, composite, mults, details, signals, warnings, vix_blocked=False):
     """Print a human-readable console summary."""
     print("\n" + "=" * 60)
     print("  VOLATILITY REGIME ANALYSIS")
@@ -293,6 +323,7 @@ def print_summary(regime, composite, mults, details, signals, warnings):
     print(f"  Composite:   {composite:.3f}")
     print(f"  Stop Mult:   {mults['stop']:.2f}x")
     print(f"  Target Mult: {mults['target']:.2f}x")
+    print(f"  VIX Filter:  {'BLOCKED (no trading)' if vix_blocked else 'ACTIVE (trading allowed)'}")
 
     print(f"\n  --- Signals ---")
     print(f"  VIX:             {details['vix_close']:.1f}  (pctl: {signals['vix_pctl']:.1%})")
@@ -341,9 +372,14 @@ def main():
         asset_df, vix_close, vix9d_close
     )
 
-    print_summary(regime, composite, mults, details, signals, warnings)
+    # VIX hysteresis filter
+    previous_blocked = load_previous_vix_state(output_path)
+    current_vix = details["vix_close"]
+    vix_blocked = compute_vix_filter(current_vix, previous_blocked)
 
-    output_data = build_output(regime, bucket, composite, mults, details)
+    print_summary(regime, composite, mults, details, signals, warnings, vix_blocked)
+
+    output_data = build_output(regime, bucket, composite, mults, details, vix_blocked)
 
     if args.dry_run:
         print("\n  [DRY RUN] Would write:")

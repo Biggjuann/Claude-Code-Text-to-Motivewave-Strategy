@@ -1,0 +1,7 @@
+{
+    "shadow_threshold_pct": [20, 40],
+    "tp1_points": [15, 25],
+    "trail_points": [10, 20],
+    "stop_buffer_ticks": [20, 60],
+    "be_trigger_pts": [8, 15]
+}

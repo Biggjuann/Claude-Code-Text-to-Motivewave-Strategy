@@ -1,0 +1,273 @@
+{
+  "iteration": 3,
+  "history": [
+    {
+      "iteration": 1,
+      "timestamp": "2026-02-07T12:02:21.116324",
+      "results": {
+        "Original": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V1": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V2": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V3": {
+          "pnl": 0.0,
+          "trades": 0
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 0.0
+    },
+    {
+      "iteration": 1,
+      "timestamp": "2026-02-07T12:03:02.465278",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 693.0,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 802.5,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 822.25,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 2,
+      "timestamp": "2026-02-07T12:05:13.560833",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 693.0,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 802.5,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 822.25,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 3,
+      "timestamp": "2026-02-07T12:22:11.491057",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 693.0,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 802.5,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 822.25,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T12:22:42.563382",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 693.0,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 802.5,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 822.25,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T12:56:36.419965",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 593.75,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 668.75,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 612.5,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T13:05:21.339778",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 593.75,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 668.75,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 612.5,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T13:20:31.299523",
+      "results": {
+        "Original": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V1": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V2": {
+          "pnl": 0.0,
+          "trades": 0
+        },
+        "V3": {
+          "pnl": 0.0,
+          "trades": 0
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 0.0
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T13:36:15.114400",
+      "results": {
+        "Original": {
+          "pnl": 1668.75,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 593.75,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 668.75,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 612.5,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1668.75
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T14:40:58.758114",
+      "results": {
+        "Original": {
+          "pnl": 1671.25,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": 593.75,
+          "trades": 89
+        },
+        "V2": {
+          "pnl": 668.75,
+          "trades": 110
+        },
+        "V3": {
+          "pnl": 610.0,
+          "trades": 102
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1671.25
+    },
+    {
+      "iteration": 4,
+      "timestamp": "2026-02-07T15:10:50.073157",
+      "results": {
+        "Original": {
+          "pnl": 1671.25,
+          "trades": 69
+        },
+        "V1": {
+          "pnl": -179.0,
+          "trades": 231
+        },
+        "V2": {
+          "pnl": -54.0,
+          "trades": 193
+        },
+        "V3": {
+          "pnl": -181.25,
+          "trades": 234
+        }
+      },
+      "best_variant": "Original",
+      "best_pnl": 1671.25
+    }
+  ],
+  "best_params": {},
+  "best_pnl": 1671.25,
+  "best_variant": "Original",
+  "last_updated": "2026-02-07T15:10:50.073157"
+}

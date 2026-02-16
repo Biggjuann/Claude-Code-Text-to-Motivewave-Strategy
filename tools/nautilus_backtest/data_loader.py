@@ -1,4 +1,7 @@
-"""Load ES 1-min OHLCV from zipped CSV into NautilusTrader Bar objects."""
+"""Load ES OHLCV from zipped CSV into NautilusTrader Bar objects.
+
+Supports resampling from 1-min source to any bar size (default: 5-min).
+"""
 
 import zipfile
 import pandas as pd
@@ -6,6 +9,21 @@ import pandas as pd
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.instruments import FuturesContract
 from nautilus_trader.persistence.wranglers import BarDataWrangler
+
+
+def resample_to_5min(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample 1-min OHLCV DataFrame to 5-min bars.
+
+    Expects UTC-indexed DataFrame with open/high/low/close/volume columns.
+    """
+    resampled = df.resample("5min").agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }).dropna()
+    return resampled
 
 
 def load_es_dataframe(zip_path: str) -> pd.DataFrame:
@@ -48,10 +66,14 @@ def wrangle_bars_from_df(
     instrument: FuturesContract,
     start_date: str = None,
     end_date: str = None,
-    bar_spec: str = "1-MINUTE-LAST",
+    bar_minutes: int = 5,
 ):
     """
-    Filter a pre-loaded DataFrame by date range and wrangle into Bar objects.
+    Filter a pre-loaded DataFrame by date range, optionally resample, and
+    wrangle into Bar objects.
+
+    Args:
+        bar_minutes: Bar size in minutes. If > 1, resamples from 1-min source.
 
     Returns (list[Bar], BarType).
     """
@@ -64,13 +86,25 @@ def wrangle_bars_from_df(
         end_ts = pd.Timestamp(end_date, tz="UTC")
         filtered = filtered[filtered.index < end_ts]
 
+    if bar_minutes > 1:
+        filtered = filtered.resample(f"{bar_minutes}min").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna()
+
+    bar_spec = f"{bar_minutes}-MINUTE-LAST"
+
     if len(filtered) == 0:
         bar_type = BarType.from_str(f"{instrument.id}-{bar_spec}-EXTERNAL")
         return [], bar_type
 
     bar_type = BarType.from_str(f"{instrument.id}-{bar_spec}-EXTERNAL")
     wrangler = BarDataWrangler(bar_type=bar_type, instrument=instrument)
-    bars = wrangler.process(filtered, ts_init_delta=60_000_000_000)
+    ts_delta = bar_minutes * 60_000_000_000  # ns per bar
+    bars = wrangler.process(filtered, ts_init_delta=ts_delta)
 
     return bars, bar_type
 
@@ -80,17 +114,20 @@ def load_es_bars(
     instrument: FuturesContract,
     start_date: str = None,
     end_date: str = None,
-    bar_spec: str = "1-MINUTE-LAST",
+    bar_minutes: int = 5,
 ):
     """
-    Load ES 1-min bars from zipped CSV into NautilusTrader Bar objects.
+    Load ES bars from zipped CSV into NautilusTrader Bar objects.
 
-    Convenience wrapper: loads full CSV, filters, wrangles.
+    Convenience wrapper: loads full CSV, filters, optionally resamples, wrangles.
     For walk-forward testing, use load_es_dataframe() + wrangle_bars_from_df() instead.
+
+    Args:
+        bar_minutes: Bar size in minutes. Default 5 (resamples from 1-min source).
 
     Returns (list[Bar], BarType).
     """
     df = load_es_dataframe(zip_path)
-    bars, bar_type = wrangle_bars_from_df(df, instrument, start_date, end_date, bar_spec)
-    print(f"Created {len(bars):,} NautilusTrader Bar objects")
+    bars, bar_type = wrangle_bars_from_df(df, instrument, start_date, end_date, bar_minutes=bar_minutes)
+    print(f"Created {len(bars):,} NautilusTrader {bar_minutes}-min Bar objects")
     return bars, bar_type

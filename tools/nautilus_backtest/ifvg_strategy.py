@@ -77,6 +77,7 @@ class IFVGRetestConfig(StrategyConfig, frozen=True):
 
     # Position
     contracts: int = 2
+    dollars_per_contract: float = 0.0  # 0 = fixed sizing, >0 = dynamic (e.g. 5000)
 
     # Stop
     stop_buffer_ticks: int = 40
@@ -333,9 +334,20 @@ class IFVGRetestStrategy(Strategy):
 
     # ==================== Entry ====================
 
+    def _compute_contracts(self) -> int:
+        cfg = self.config
+        if cfg.dollars_per_contract <= 0:
+            return cfg.contracts
+        account = self.portfolio.account(self.instrument_id.venue)
+        if account is None:
+            return cfg.contracts
+        equity = float(account.balance_total().as_double())
+        return max(1, int(equity // cfg.dollars_per_contract))
+
     def _enter_trade(self, zone: IFVGZone, go_long: bool, price: float, bar_dt):
         cfg = self.config
-        qty = Quantity.from_int(cfg.contracts)
+        num_contracts = self._compute_contracts()
+        qty = Quantity.from_int(num_contracts)
         side = OrderSide.BUY if go_long else OrderSide.SELL
 
         order = self.order_factory.market(
@@ -383,7 +395,7 @@ class IFVGRetestStrategy(Strategy):
         self.trades_today += 1
 
         self.log.info(
-            f"{'LONG' if go_long else 'SHORT'} ENTRY: qty={cfg.contracts}, "
+            f"{'LONG' if go_long else 'SHORT'} ENTRY: qty={num_contracts}, "
             f"entry={price:.2f}, stop={self.stop_price:.2f}, "
             f"TP1={self.tp1_price:.2f}, zone=[{zone.bottom:.2f}-{zone.top:.2f}], "
             f"regime={self.current_regime}(target={target_mult:.2f}x)"

@@ -1,9 +1,9 @@
 """
-NautilusTrader IFVG Retest Strategy Backtest Runner.
+BrianStonk Modular ICT Strategy — NautilusTrader Backtest Runner.
 
 Usage:
-    python run_backtest.py [--start 2024-01-01] [--end 2026-01-01] [--contracts 2]
-    python run_backtest.py --start 2020-01-01 --end 2026-01-01 --log-level WARNING
+    python run_brianstonk.py [--start 2024-01-01] [--end 2026-01-01]
+    python run_brianstonk.py --start 2020-01-01 --end 2026-01-01 --mes --contracts 10 --vix-filter
 """
 
 import argparse
@@ -21,8 +21,8 @@ from nautilus_trader.model.objects import Money
 
 from instrument import create_es_instrument
 from data_loader import load_es_bars
-from ifvg_strategy import IFVGRetestStrategy, IFVGRetestConfig
-from regime_calculator import compute_daily_regimes, load_daily_vix
+from brianstonk_strategy import BrianStonkStrategy, BrianStonkConfig
+from regime_calculator import load_daily_vix
 
 ES_ZIP_PATH = r"C:\Users\jung_\Downloads\Backtesting data\ES_full_1min_continuous_ratio_adjusted_13wjmr (1).zip"
 VIX_ZIP_PATH = r"C:\Users\jung_\Downloads\Backtesting data\VIX_full_1min_ttewdg8.zip"
@@ -32,33 +32,32 @@ STARTING_CAPITAL = 25_000.0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IFVG Retest Strategy Backtest")
+    parser = argparse.ArgumentParser(description="BrianStonk Modular ICT Strategy Backtest")
     parser.add_argument("--start", default=DEFAULT_START, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=DEFAULT_END, help="End date YYYY-MM-DD")
-    parser.add_argument("--contracts", type=int, default=2)
-    parser.add_argument("--shadow-threshold", type=float, default=30.0)
-    parser.add_argument("--max-wait", type=int, default=30)
-    parser.add_argument("--tp1-points", type=float, default=20.0)
-    parser.add_argument("--trail-points", type=float, default=15.0)
-    parser.add_argument("--stop-buffer", type=int, default=40)
-    parser.add_argument("--stop-max", type=float, default=40.0)
+    parser.add_argument("--contracts", type=int, default=10)
+    parser.add_argument("--target-r", type=float, default=1.0)
+    parser.add_argument("--stop-default", type=float, default=20.0)
+    parser.add_argument("--stop-min", type=float, default=18.0)
+    parser.add_argument("--stop-max", type=float, default=25.0)
     parser.add_argument("--be-trigger", type=float, default=10.0)
-    parser.add_argument("--max-trades", type=int, default=3)
+    parser.add_argument("--max-trades", type=int, default=6)
+    parser.add_argument("--cooldown", type=int, default=5)
+    parser.add_argument("--fvg-min-gap", type=float, default=2.0)
+    parser.add_argument("--dollars-per-contract", type=float, default=0, help="Dynamic sizing: $ per contract (0=fixed)")
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
-    parser.add_argument("--dollars-per-contract", type=float, default=0, help="Dynamic sizing: $ per contract (0=fixed)")
-    parser.add_argument("--regime", action="store_true", help="Enable volatility regime adaptive stops/targets")
     parser.add_argument("--mes", action="store_true", help="Use MES ($5/point) instead of ES ($50/point)")
     parser.add_argument("--vix-filter", action="store_true", help="Enable VIX hysteresis filter")
-    parser.add_argument("--vix-off", type=float, default=30.0, help="Stop trading when VIX > this")
-    parser.add_argument("--vix-on", type=float, default=20.0, help="Resume trading when VIX < this")
+    parser.add_argument("--vix-off", type=float, default=30.0)
+    parser.add_argument("--vix-on", type=float, default=20.0)
     parser.add_argument("--bar-minutes", type=int, default=5, help="Bar size in minutes (default: 5)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     # 1. Create engine
     engine_config = BacktestEngineConfig(
-        trader_id="BACKTESTER-001",
+        trader_id="BACKTESTER-002",
         logging=LoggingConfig(log_level=args.log_level),
         risk_engine=RiskEngineConfig(bypass=True),
     )
@@ -90,16 +89,8 @@ def main():
     )
     engine.add_data(bars)
 
-    # 5. Compute volatility regimes and VIX data
-    regime_lookup = {}
+    # 5. VIX data
     vix_lookup = {}
-    if args.regime:
-        regime_lookup = compute_daily_regimes(
-            es_zip_path=ES_ZIP_PATH,
-            vix_zip_path=VIX_ZIP_PATH,
-            start_date=args.start,
-            end_date=args.end,
-        )
     if args.vix_filter:
         print("Loading VIX data for filter...")
         vix_lookup = load_daily_vix(VIX_ZIP_PATH)
@@ -108,43 +99,48 @@ def main():
     enable_long = not args.short_only
     enable_short = not args.long_only
 
-    strategy_config = IFVGRetestConfig(
+    strategy_config = BrianStonkConfig(
         instrument_id=es.id,
         bar_type=bar_type,
         enable_long=enable_long,
         enable_short=enable_short,
         contracts=args.contracts,
         dollars_per_contract=args.dollars_per_contract,
-        shadow_threshold_pct=args.shadow_threshold,
-        max_wait_bars=args.max_wait,
-        tp1_points=args.tp1_points,
-        trail_points=args.trail_points,
-        stop_buffer_ticks=args.stop_buffer,
-        stop_max_pts=args.stop_max,
+        target_r=args.target_r,
+        stop_default=args.stop_default,
+        stop_min=args.stop_min,
+        stop_max=args.stop_max,
         be_trigger_pts=args.be_trigger,
         max_trades_day=args.max_trades,
+        cooldown_minutes=args.cooldown,
+        fvg_min_gap=args.fvg_min_gap,
         vix_filter_enabled=args.vix_filter,
         vix_off=args.vix_off,
         vix_on=args.vix_on,
-        order_id_tag="001",
+        order_id_tag="002",
     )
-    strategy = IFVGRetestStrategy(config=strategy_config, regime_lookup=regime_lookup, vix_lookup=vix_lookup)
+    strategy = BrianStonkStrategy(config=strategy_config, vix_lookup=vix_lookup)
     engine.add_strategy(strategy)
 
     # 7. Run
-    print(f"\nRunning backtest ({len(bars):,} bars)...")
+    print(f"\nRunning backtest ({len(bars):,} bars, {args.bar_minutes}-min)...")
     engine.run()
 
     # 8. Report results
     print("\n" + "=" * 60)
-    print("BACKTEST RESULTS")
+    print("BRIANSTONK MODULAR STRATEGY — BACKTEST RESULTS")
     print("=" * 60)
     print(f"Period: {args.start} to {args.end}")
     print(f"Starting Capital: ${STARTING_CAPITAL:,.0f}")
-    instrument_label = f"{'MES' if args.mes else 'ES'} x {args.contracts}"
+    if args.dollars_per_contract > 0:
+        instrument_label = f"{'MES' if args.mes else 'ES'} dynamic (${args.dollars_per_contract:,.0f}/contract)"
+    else:
+        instrument_label = f"{'MES' if args.mes else 'ES'} x {args.contracts}"
     print(f"Instrument: {instrument_label}")
+    print(f"Bar Size: {args.bar_minutes}-min")
     print(f"Direction: {'Long+Short' if enable_long and enable_short else 'Long only' if enable_long else 'Short only'}")
-    print(f"Vol Regime: {'ENABLED' if args.regime else 'OFF'}")
+    print(f"Target R: {args.target_r}")
+    print(f"Stop: {args.stop_min}-{args.stop_max} pts (default {args.stop_default})")
     if args.vix_filter:
         print(f"VIX Filter: OFF > {args.vix_off}, ON < {args.vix_on}")
     print()
@@ -170,19 +166,16 @@ def main():
             gross_losses = abs(losses.sum()) if len(losses) > 0 else 0
             profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf")
 
-            # Max drawdown from equity curve
             equity = pnls.cumsum()
             peak = equity.cummax()
             drawdown = equity - peak
             max_dd = drawdown.min()
 
-            # Sharpe ratio (annualized, ~252 trading days)
             if len(pnls) > 1 and pnls.std() > 0:
                 sharpe = (pnls.mean() / pnls.std()) * np.sqrt(252)
             else:
                 sharpe = 0
 
-            # Return on capital
             roi = (total_pnl / STARTING_CAPITAL) * 100
 
             print(f"\n{'--- Key Statistics ---':^40}")
@@ -198,8 +191,8 @@ def main():
             print(f"{'Losing Trades:':<25} {len(losses):>12}")
 
         # Save to CSV
-        output_dir = Path(__file__).parent / "results"
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(__file__).parent / "results" / "brianstonk"
+        output_dir.mkdir(parents=True, exist_ok=True)
         positions_report.to_csv(output_dir / "positions.csv")
         if fills_report is not None and not fills_report.empty:
             fills_report.to_csv(output_dir / "fills.csv")
@@ -207,7 +200,7 @@ def main():
 
         # Generate and open equity curve
         from plot_equity import plot_equity
-        title = f"IFVG Retest Strategy — {args.start} to {args.end} ({instrument_label}, VIX {'ON' if args.vix_filter else 'OFF'})"
+        title = f"BrianStonk Modular — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min, R={args.target_r})"
         chart_path = plot_equity(str(output_dir / "positions.csv"), title)
         import subprocess
         subprocess.Popen(["cmd", "/c", "start", "", str(chart_path)],
@@ -215,7 +208,7 @@ def main():
     else:
         print("No trades were generated.")
 
-    # 8. Cleanup
+    # 9. Cleanup
     engine.reset()
     engine.dispose()
 

@@ -25,5 +25,9 @@ nul
 # Backup files
 *.bak
 
+# Python
+__pycache__/
+*.pyc
+
 # Claude session files
 .claude/

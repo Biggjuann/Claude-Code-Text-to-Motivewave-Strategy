@@ -1,9 +1,9 @@
 """
-NautilusTrader IFVG Retest Strategy Backtest Runner.
+ICT Setup Selector (JadeCap) Strategy — NautilusTrader Backtest Runner.
 
 Usage:
-    python run_backtest.py [--start 2024-01-01] [--end 2026-01-01] [--contracts 2]
-    python run_backtest.py --start 2020-01-01 --end 2026-01-01 --log-level WARNING
+    python run_jadecap.py [--start 2024-01-01] [--end 2026-01-01]
+    python run_jadecap.py --start 2022-01-01 --end 2026-01-01 --mes --dollars-per-contract 5000
 """
 
 import argparse
@@ -21,8 +21,8 @@ from nautilus_trader.model.objects import Money
 
 from instrument import create_es_instrument
 from data_loader import load_es_bars
-from ifvg_strategy import IFVGRetestStrategy, IFVGRetestConfig
-from regime_calculator import compute_daily_regimes, load_daily_vix
+from jadecap_strategy import JadeCapStrategy, JadeCapConfig
+from regime_calculator import load_daily_vix
 
 ES_ZIP_PATH = r"C:\Users\jung_\Downloads\Backtesting data\ES_full_1min_continuous_ratio_adjusted_13wjmr (1).zip"
 VIX_ZIP_PATH = r"C:\Users\jung_\Downloads\Backtesting data\VIX_full_1min_ttewdg8.zip"
@@ -32,33 +32,68 @@ STARTING_CAPITAL = 25_000.0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IFVG Retest Strategy Backtest")
+    parser = argparse.ArgumentParser(description="JadeCap (ICT Setup Selector) Backtest")
     parser.add_argument("--start", default=DEFAULT_START, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=DEFAULT_END, help="End date YYYY-MM-DD")
-    parser.add_argument("--contracts", type=int, default=2)
-    parser.add_argument("--shadow-threshold", type=float, default=30.0)
-    parser.add_argument("--max-wait", type=int, default=30)
-    parser.add_argument("--tp1-points", type=float, default=20.0)
-    parser.add_argument("--trail-points", type=float, default=15.0)
-    parser.add_argument("--stop-buffer", type=int, default=40)
-    parser.add_argument("--stop-max", type=float, default=40.0)
-    parser.add_argument("--be-trigger", type=float, default=10.0)
-    parser.add_argument("--max-trades", type=int, default=3)
+
+    # Direction
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
+
+    # Session
+    parser.add_argument("--no-always-on", action="store_true", help="Disable always-on trade window")
+    parser.add_argument("--trade-start", type=int, default=1800)
+    parser.add_argument("--trade-end", type=int, default=1230)
+    parser.add_argument("--kz-preset", type=int, default=3, help="Kill zone: 0=NY AM, 1=NY PM, 2=London, 3=Custom")
+    parser.add_argument("--kz-start", type=int, default=100)
+    parser.add_argument("--kz-end", type=int, default=1130)
+
+    # Limits
+    parser.add_argument("--max-trades", type=int, default=1)
+    parser.add_argument("--max-per-side", type=int, default=1)
+
+    # Sizing
+    parser.add_argument("--contracts", type=int, default=10)
     parser.add_argument("--dollars-per-contract", type=float, default=0, help="Dynamic sizing: $ per contract (0=fixed)")
-    parser.add_argument("--regime", action="store_true", help="Enable volatility regime adaptive stops/targets")
+
+    # Liquidity
+    parser.add_argument("--no-deeper-liq", action="store_true", help="Disable require deeper liquidity")
+    parser.add_argument("--pwl-enabled", action="store_true", help="Enable PWL tracking for MMBM")
+    parser.add_argument("--no-major-swing", action="store_true", help="Disable major swing tracking")
+    parser.add_argument("--major-swing-lookback", type=int, default=500)
+    parser.add_argument("--sweep-min-ticks", type=int, default=2)
+    parser.add_argument("--pivot-strength", type=int, default=10)
+
+    # Entry
+    parser.add_argument("--entry-model", type=int, default=1, help="0=Immediate, 1=FVG Only, 2=Both, 3=MSS Market")
+    parser.add_argument("--fvg-min-ticks", type=int, default=2)
+    parser.add_argument("--max-bars-fill", type=int, default=30)
+    parser.add_argument("--strictness", type=int, default=0, help="0=Aggressive, 1=Balanced, 2=Conservative")
+
+    # Risk
+    parser.add_argument("--stop-mode", type=int, default=0, help="0=Fixed, 1=Structural")
+    parser.add_argument("--stop-ticks", type=int, default=40)
+
+    # Exits
+    parser.add_argument("--exit-model", type=int, default=2, help="0=RR, 1=TP1+TP2, 2=Scale+Trail, 3=Midday")
+    parser.add_argument("--rr-multiple", type=float, default=3.0)
+    parser.add_argument("--partial-pct", type=int, default=25)
+    parser.add_argument("--no-partial", action="store_true")
+
+    # Instrument / VIX
     parser.add_argument("--mes", action="store_true", help="Use MES ($5/point) instead of ES ($50/point)")
     parser.add_argument("--vix-filter", action="store_true", help="Enable VIX hysteresis filter")
-    parser.add_argument("--vix-off", type=float, default=30.0, help="Stop trading when VIX > this")
-    parser.add_argument("--vix-on", type=float, default=20.0, help="Resume trading when VIX < this")
+    parser.add_argument("--vix-off", type=float, default=30.0)
+    parser.add_argument("--vix-on", type=float, default=20.0)
+
+    # Bar size / logging
     parser.add_argument("--bar-minutes", type=int, default=5, help="Bar size in minutes (default: 5)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     # 1. Create engine
     engine_config = BacktestEngineConfig(
-        trader_id="BACKTESTER-001",
+        trader_id="BACKTESTER-005",
         logging=LoggingConfig(log_level=args.log_level),
         risk_engine=RiskEngineConfig(bypass=True),
     )
@@ -90,16 +125,8 @@ def main():
     )
     engine.add_data(bars)
 
-    # 5. Compute volatility regimes and VIX data
-    regime_lookup = {}
+    # 5. VIX data
     vix_lookup = {}
-    if args.regime:
-        regime_lookup = compute_daily_regimes(
-            es_zip_path=ES_ZIP_PATH,
-            vix_zip_path=VIX_ZIP_PATH,
-            start_date=args.start,
-            end_date=args.end,
-        )
     if args.vix_filter:
         print("Loading VIX data for filter...")
         vix_lookup = load_daily_vix(VIX_ZIP_PATH)
@@ -108,43 +135,76 @@ def main():
     enable_long = not args.short_only
     enable_short = not args.long_only
 
-    strategy_config = IFVGRetestConfig(
+    exit_model_names = {0: "RR", 1: "TP1+TP2", 2: "Scale+Trail", 3: "Midday"}
+    entry_model_names = {0: "Immediate", 1: "FVG Only", 2: "Both", 3: "MSS Market"}
+    strictness_names = {0: "Aggressive", 1: "Balanced", 2: "Conservative"}
+
+    strategy_config = JadeCapConfig(
         instrument_id=es.id,
         bar_type=bar_type,
+        setup_mode=1,
         enable_long=enable_long,
         enable_short=enable_short,
+        trade_window_always_on=not args.no_always_on,
+        trade_start=args.trade_start,
+        trade_end=args.trade_end,
+        kill_zone_preset=args.kz_preset,
+        kz_custom_start=args.kz_start,
+        kz_custom_end=args.kz_end,
+        max_trades_per_day=args.max_trades,
+        max_trades_per_side=args.max_per_side,
         contracts=args.contracts,
         dollars_per_contract=args.dollars_per_contract,
-        shadow_threshold_pct=args.shadow_threshold,
-        max_wait_bars=args.max_wait,
-        tp1_points=args.tp1_points,
-        trail_points=args.trail_points,
-        stop_buffer_ticks=args.stop_buffer,
-        stop_max_pts=args.stop_max,
-        be_trigger_pts=args.be_trigger,
-        max_trades_day=args.max_trades,
+        mmbm_pwl_enabled=args.pwl_enabled,
+        mmbm_major_swing_enabled=not args.no_major_swing,
+        mmsm_pwh_enabled=True,
+        mmsm_major_swing_high_enabled=not args.no_major_swing,
+        major_swing_lookback=args.major_swing_lookback,
+        require_deeper_liq=not args.no_deeper_liq,
+        sweep_min_ticks=args.sweep_min_ticks,
+        pivot_strength=args.pivot_strength,
+        entry_model=args.entry_model,
+        fvg_min_ticks=args.fvg_min_ticks,
+        max_bars_to_fill=args.max_bars_fill,
+        confirmation_strictness=args.strictness,
+        stoploss_mode=args.stop_mode,
+        stoploss_ticks=args.stop_ticks,
+        exit_model=args.exit_model,
+        rr_multiple=args.rr_multiple,
+        partial_enabled=not args.no_partial,
+        partial_pct=args.partial_pct,
         vix_filter_enabled=args.vix_filter,
         vix_off=args.vix_off,
         vix_on=args.vix_on,
-        order_id_tag="001",
+        order_id_tag="005",
     )
-    strategy = IFVGRetestStrategy(config=strategy_config, regime_lookup=regime_lookup, vix_lookup=vix_lookup)
+    strategy = JadeCapStrategy(config=strategy_config, vix_lookup=vix_lookup)
     engine.add_strategy(strategy)
 
     # 7. Run
-    print(f"\nRunning backtest ({len(bars):,} bars)...")
+    print(f"\nRunning backtest ({len(bars):,} bars, {args.bar_minutes}-min)...")
     engine.run()
 
     # 8. Report results
     print("\n" + "=" * 60)
-    print("BACKTEST RESULTS")
+    print("JADECAP (ICT SETUP SELECTOR) — BACKTEST RESULTS")
     print("=" * 60)
     print(f"Period: {args.start} to {args.end}")
     print(f"Starting Capital: ${STARTING_CAPITAL:,.0f}")
-    instrument_label = f"{'MES' if args.mes else 'ES'} x {args.contracts}"
+    if args.dollars_per_contract > 0:
+        instrument_label = f"{'MES' if args.mes else 'ES'} dynamic (${args.dollars_per_contract:,.0f}/contract)"
+    else:
+        instrument_label = f"{'MES' if args.mes else 'ES'} x {args.contracts}"
     print(f"Instrument: {instrument_label}")
-    print(f"Direction: {'Long+Short' if enable_long and enable_short else 'Long only' if enable_long else 'Short only'}")
-    print(f"Vol Regime: {'ENABLED' if args.regime else 'OFF'}")
+    print(f"Bar Size: {args.bar_minutes}-min")
+    direction = "Long+Short" if enable_long and enable_short else ("Long only" if enable_long else "Short only")
+    print(f"Direction: {direction}")
+    print(f"Entry: {entry_model_names.get(args.entry_model, '?')} | Strictness: {strictness_names.get(args.strictness, '?')}")
+    print(f"Exit: {exit_model_names.get(args.exit_model, '?')} | RR: {args.rr_multiple} | Partial: {args.partial_pct}%")
+    print(f"Stop: {'Structural' if args.stop_mode == 1 else 'Fixed'} ({args.stop_ticks} ticks)")
+    deeper = "Required" if not args.no_deeper_liq else "Not required"
+    print(f"Deeper Liquidity: {deeper} | Pivot Strength: {args.pivot_strength}")
+    print(f"Max Trades/Day: {args.max_trades} | Max/Side: {args.max_per_side}")
     if args.vix_filter:
         print(f"VIX Filter: OFF > {args.vix_off}, ON < {args.vix_on}")
     print()
@@ -170,19 +230,16 @@ def main():
             gross_losses = abs(losses.sum()) if len(losses) > 0 else 0
             profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf")
 
-            # Max drawdown from equity curve
             equity = pnls.cumsum()
             peak = equity.cummax()
             drawdown = equity - peak
             max_dd = drawdown.min()
 
-            # Sharpe ratio (annualized, ~252 trading days)
             if len(pnls) > 1 and pnls.std() > 0:
                 sharpe = (pnls.mean() / pnls.std()) * np.sqrt(252)
             else:
                 sharpe = 0
 
-            # Return on capital
             roi = (total_pnl / STARTING_CAPITAL) * 100
 
             print(f"\n{'--- Key Statistics ---':^40}")
@@ -198,8 +255,8 @@ def main():
             print(f"{'Losing Trades:':<25} {len(losses):>12}")
 
         # Save to CSV
-        output_dir = Path(__file__).parent / "results"
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(__file__).parent / "results" / "jadecap"
+        output_dir.mkdir(parents=True, exist_ok=True)
         positions_report.to_csv(output_dir / "positions.csv")
         if fills_report is not None and not fills_report.empty:
             fills_report.to_csv(output_dir / "fills.csv")
@@ -207,7 +264,7 @@ def main():
 
         # Generate and open equity curve
         from plot_equity import plot_equity
-        title = f"IFVG Retest Strategy — {args.start} to {args.end} ({instrument_label}, VIX {'ON' if args.vix_filter else 'OFF'})"
+        title = f"JadeCap — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min, {entry_model_names.get(args.entry_model, '?')})"
         chart_path = plot_equity(str(output_dir / "positions.csv"), title)
         import subprocess
         subprocess.Popen(["cmd", "/c", "start", "", str(chart_path)],
@@ -215,7 +272,7 @@ def main():
     else:
         print("No trades were generated.")
 
-    # 8. Cleanup
+    # 9. Cleanup
     engine.reset()
     engine.dispose()
 

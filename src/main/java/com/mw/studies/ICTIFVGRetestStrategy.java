@@ -1,6 +1,9 @@
 package com.mw.studies;
 
 import java.awt.Color;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -128,6 +131,10 @@ public class ICTIFVGRetestStrategy extends Study
 
     // ==================== Constants ====================
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
+    private static final String REGIME_FILE = System.getProperty("user.home")
+        + "/MotiveWave Extensions/volatility_regime.json";
+    private static final long REGIME_RELOAD_MS = 30 * 60 * 1000; // reload every 30 min
+    private static final long REGIME_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h staleness
 
     // ==================== State ====================
     private List<IFVGZone> zones = new ArrayList<>();
@@ -151,6 +158,10 @@ public class ICTIFVGRetestStrategy extends Study
     // EOD tracking
     private int lastResetDay = -1;
     private boolean eodProcessed = false;
+
+    // VIX filter state (read from regime JSON)
+    private boolean vixBlocked = false;
+    private long regimeLastLoadTime = 0;
 
     // ==================== INITIALIZE ====================
     @Override
@@ -466,7 +477,8 @@ public class ICTIFVGRetestStrategy extends Study
     @Override
     public void onActivate(OrderContext ctx)
     {
-        debug("ICT IFVG Retest Strategy activated");
+        loadVixFilter();
+        debug("ICT IFVG Retest Strategy activated (vixBlocked=" + vixBlocked + ")");
     }
 
     @Override
@@ -490,6 +502,11 @@ public class ICTIFVGRetestStrategy extends Study
         int position = ctx.getPosition();
         if (position != 0) {
             debug("Already in position, ignoring signal");
+            return;
+        }
+
+        if (vixBlocked) {
+            debug("VIX filter active, blocking entry");
             return;
         }
 
@@ -583,6 +600,12 @@ public class ICTIFVGRetestStrategy extends Study
     @Override
     public void onBarClose(OrderContext ctx)
     {
+        // Periodically reload VIX filter from regime JSON
+        long now = System.currentTimeMillis();
+        if (now - regimeLastLoadTime > REGIME_RELOAD_MS) {
+            loadVixFilter();
+        }
+
         calculateValues(ctx.getDataContext());
 
         var series = ctx.getDataContext().getDataSeries();
@@ -754,6 +777,58 @@ public class ICTIFVGRetestStrategy extends Study
         return String.format("%.2f", val);
     }
 
+    // ==================== VIX FILTER ====================
+
+    private void loadVixFilter()
+    {
+        regimeLastLoadTime = System.currentTimeMillis();
+        File file = new File(REGIME_FILE);
+        if (!file.exists()) {
+            vixBlocked = false;
+            debug("Regime file not found, VIX filter inactive");
+            return;
+        }
+
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String json = sb.toString();
+
+            // Check freshness
+            if (System.currentTimeMillis() - file.lastModified() > REGIME_MAX_AGE_MS) {
+                debug("Regime file is stale (>24h), VIX filter inactive");
+                vixBlocked = false;
+                return;
+            }
+
+            boolean blocked = parseJsonBoolean(json, "vix_blocked", false);
+            boolean changed = (blocked != vixBlocked);
+            vixBlocked = blocked;
+            if (changed) {
+                debug("VIX filter state changed: vixBlocked=" + vixBlocked);
+            }
+        } catch (Exception e) {
+            debug("Failed to load VIX filter: " + e.getMessage());
+            vixBlocked = false;
+        }
+    }
+
+    private boolean parseJsonBoolean(String json, String key, boolean defaultVal)
+    {
+        String pattern = "\"" + key + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) return defaultVal;
+        int colon = json.indexOf(':', idx + pattern.length());
+        if (colon < 0) return defaultVal;
+        int start = colon + 1;
+        while (start < json.length() && json.charAt(start) == ' ') start++;
+        // Look for true/false keyword
+        if (start + 4 <= json.length() && json.substring(start, start + 4).equals("true")) return true;
+        if (start + 5 <= json.length() && json.substring(start, start + 5).equals("fals")) return false;
+        return defaultVal;
+    }
+
     // ==================== CLEAR STATE ====================
     @Override
     public void clearState()
@@ -764,5 +839,7 @@ public class ICTIFVGRetestStrategy extends Study
         resetTradeState();
         lastResetDay = -1;
         eodProcessed = false;
+        vixBlocked = false;
+        regimeLastLoadTime = 0;
     }
 }
