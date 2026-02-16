@@ -6,7 +6,9 @@ import java.io.File;
 import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.TimeZone;
 
 import com.motivewave.platform.sdk.common.*;
@@ -139,6 +141,7 @@ public class ICTIFVGRetestStrategy extends Study
     // ==================== State ====================
     private List<IFVGZone> zones = new ArrayList<>();
     private List<Marker> entryMarkers = new ArrayList<>();
+    private Set<Integer> signaledBars = new HashSet<>();
 
     // Trade state (managed by onSignal/onBarClose, NOT cleared by calculateValues)
     private boolean isLongTrade = false;
@@ -306,7 +309,7 @@ public class ICTIFVGRetestStrategy extends Study
             long barTime = series.getStartTime(i);
             int barDay = getDayOfYear(barTime);
             int barTimeInt = getTimeInt(barTime);
-            boolean canSignal = !series.isComplete(i) && series.isBarComplete(i);
+            boolean canSignal = series.isBarComplete(i) && !signaledBars.contains(i);
 
             // Daily reset
             if (barDay != localLastDay) {
@@ -412,7 +415,7 @@ public class ICTIFVGRetestStrategy extends Study
                 }
             }
 
-            if (canSignal) series.setComplete(i);
+            if (canSignal) signaledBars.add(i);
         }
 
         // ===== Draw IFVG zones =====
@@ -730,6 +733,7 @@ public class ICTIFVGRetestStrategy extends Study
 
     private void resetTradeState()
     {
+        isLongTrade = false;
         entryPrice = 0;
         stopPrice = 0;
         tp1Price = 0;
@@ -836,6 +840,7 @@ public class ICTIFVGRetestStrategy extends Study
         super.clearState();
         zones.clear();
         entryMarkers.clear();
+        signaledBars.clear();
         resetTradeState();
         lastResetDay = -1;
         eodProcessed = false;

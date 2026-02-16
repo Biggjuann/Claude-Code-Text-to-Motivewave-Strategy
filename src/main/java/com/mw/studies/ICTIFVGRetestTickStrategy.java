@@ -727,6 +727,7 @@ public class ICTIFVGRetestTickStrategy extends Study
 
     private void resetTradeState()
     {
+        isLongTrade = false;
         entryPrice = 0;
         stopPrice = 0;
         tp1Price = 0;
