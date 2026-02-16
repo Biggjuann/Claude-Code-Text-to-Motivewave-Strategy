@@ -281,7 +281,7 @@ public class BrianStonkModularStrategy extends Study
         grp.addRow(new BooleanDescriptor(ENABLE_SHORT, "Enable Short", true));
 
         grp = tab.addGroup("Entry Models");
-        grp.addRow(new BooleanDescriptor(ENABLE_UNICORN, "UN1: Unicorn (Breaker+BPR/FVG)", true));
+        grp.addRow(new BooleanDescriptor(ENABLE_UNICORN, "UN1: Unicorn (Breaker+BPR/FVG)", false));
         grp.addRow(new BooleanDescriptor(ENABLE_BREAKER, "BR1: Breaker Retap", true));
         grp.addRow(new BooleanDescriptor(ENABLE_IFVG, "IF1: IFVG/BPR Flip", true));
         grp.addRow(new BooleanDescriptor(ENABLE_OB, "OB1: OB Mean Threshold", true));
@@ -290,8 +290,8 @@ public class BrianStonkModularStrategy extends Study
         tab = sd.addTab("Sessions");
         grp = tab.addGroup("Trade Window (ET)");
         grp.addRow(new IntegerDescriptor(TRADE_START, "Start Time (HHMM)", 930, 0, 2359, 1));
-        grp.addRow(new IntegerDescriptor(TRADE_END, "End Time (HHMM)", 1600, 0, 2359, 1));
-        grp.addRow(new IntegerDescriptor(MAX_TRADES_DAY, "Max Trades Per Day", 3, 1, 10, 1));
+        grp.addRow(new IntegerDescriptor(TRADE_END, "End Time (HHMM)", 1530, 0, 2359, 1));
+        grp.addRow(new IntegerDescriptor(MAX_TRADES_DAY, "Max Trades Per Day", 6, 1, 10, 1));
         grp.addRow(new IntegerDescriptor(COOLDOWN_MINUTES, "Cooldown (minutes)", 5, 0, 60, 1));
 
         grp = tab.addGroup("Forced Flat");
@@ -301,7 +301,7 @@ public class BrianStonkModularStrategy extends Study
         // ===== Alignment Tab =====
         tab = sd.addTab("Alignment");
         grp = tab.addGroup("Timeframe Alignment");
-        grp.addRow(new BooleanDescriptor(REQUIRE_INTRADAY_ALIGN, "Require Intraday Alignment", true));
+        grp.addRow(new BooleanDescriptor(REQUIRE_INTRADAY_ALIGN, "Require Intraday Alignment", false));
         grp.addRow(new IntegerDescriptor(HTF_FILTER_MODE, "HTF Filter (0=Strict, 1=Loose, 2=Off)", HTF_LOOSE, 0, 2, 1));
         grp.addRow(new IntegerDescriptor(INTRADAY_MA_PERIOD, "Intraday MA Period", 21, 5, 100, 1));
         grp.addRow(new IntegerDescriptor(PIVOT_LEFT, "Pivot Left Bars", 2, 1, 10, 1));
@@ -337,14 +337,14 @@ public class BrianStonkModularStrategy extends Study
         // ===== Risk Tab =====
         tab = sd.addTab("Risk");
         grp = tab.addGroup("Stop Loss (1m Breaker Default)");
-        grp.addRow(new DoubleDescriptor(STOP_DEFAULT, "Default Stop (points)", 12.5, 5.0, 50.0, 0.5));
-        grp.addRow(new DoubleDescriptor(STOP_MIN, "Min Stop (points)", 10.0, 1.0, 50.0, 0.5));
-        grp.addRow(new DoubleDescriptor(STOP_MAX, "Max Stop (points)", 15.0, 5.0, 100.0, 1.0));
+        grp.addRow(new DoubleDescriptor(STOP_DEFAULT, "Default Stop (points)", 20.0, 5.0, 50.0, 0.5));
+        grp.addRow(new DoubleDescriptor(STOP_MIN, "Min Stop (points)", 18.0, 1.0, 50.0, 0.5));
+        grp.addRow(new DoubleDescriptor(STOP_MAX, "Max Stop (points)", 25.0, 5.0, 100.0, 1.0));
         grp.addRow(new BooleanDescriptor(STOP_OVERRIDE_TO_STRUCTURE, "Override to Structure if Tight", true));
 
         grp = tab.addGroup("Breakeven");
         grp.addRow(new BooleanDescriptor(BE_ENABLED, "Move Stop to Breakeven", true));
-        grp.addRow(new DoubleDescriptor(BE_TRIGGER_PTS, "BE Trigger (points profit)", 3.0, 0.25, 50.0, 0.25));
+        grp.addRow(new DoubleDescriptor(BE_TRIGGER_PTS, "BE Trigger (points profit)", 10.0, 0.25, 50.0, 0.25));
 
         grp = tab.addGroup("Position Size");
         grp.addRow(new IntegerDescriptor(FIXED_CONTRACTS, "Contracts", 1, 1, 100, 1));
@@ -352,11 +352,11 @@ public class BrianStonkModularStrategy extends Study
         // ===== Targets Tab =====
         tab = sd.addTab("Targets");
         grp = tab.addGroup("Target Mode");
-        grp.addRow(new IntegerDescriptor(TARGET_MODE, "Mode (0=Fixed R, 1=Liquidity, 2=Hybrid)", TARGET_HYBRID, 0, 2, 1));
-        grp.addRow(new DoubleDescriptor(TARGET_R, "Fixed R Target", 2.0, 0.5, 10.0, 0.5));
+        grp.addRow(new IntegerDescriptor(TARGET_MODE, "Mode (0=Fixed R, 1=Liquidity, 2=Hybrid)", TARGET_FIXED_R, 0, 2, 1));
+        grp.addRow(new DoubleDescriptor(TARGET_R, "Fixed R Target", 1.0, 0.5, 10.0, 0.5));
 
         grp = tab.addGroup("Partials");
-        grp.addRow(new BooleanDescriptor(PARTIAL_ENABLED, "Enable Partial", true));
+        grp.addRow(new BooleanDescriptor(PARTIAL_ENABLED, "Enable Partial", false));
         grp.addRow(new DoubleDescriptor(PARTIAL_R, "Partial at R", 1.0, 0.5, 5.0, 0.25));
         grp.addRow(new IntegerDescriptor(PARTIAL_PCT, "Partial %", 50, 10, 90, 10));
         grp.addRow(new BooleanDescriptor(RUNNER_ENABLED, "Keep Runner", true));
@@ -1355,14 +1355,35 @@ public class BrianStonkModularStrategy extends Study
         super.clearState();
         resetDailyState();
         resetTradeState();
+
+        // Daily/session tracking
         lastResetDay = -1;
         todayHigh = Double.NaN;
         todayLow = Double.NaN;
         sessionHigh = Double.NaN;
         sessionLow = Double.NaN;
+
+        // Swing tracking
         lastSwingHigh = Double.NaN;
         lastSwingLow = Double.NaN;
+        lastSwingHighBar = -1;
+        lastSwingLowBar = -1;
         prevSwingHigh = Double.NaN;
         prevSwingLow = Double.NaN;
+
+        // Sweep tracking
+        sweepHighDetected = false;
+        sweepLowDetected = false;
+        lastSweepBar = -1;
+        sweepExtreme = Double.NaN;
+
+        // Bias/alignment
+        intradayBias = BIAS_NEUTRAL;
+        htfBias = BIAS_NEUTRAL;
+        ltfPermission = false;
+
+        // Trade timing
+        lastTradeTime = 0;
+        isLongPosition = false;
     }
 }
