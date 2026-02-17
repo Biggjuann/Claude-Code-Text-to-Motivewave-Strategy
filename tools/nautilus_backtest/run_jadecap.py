@@ -86,9 +86,22 @@ def main():
     parser.add_argument("--vix-off", type=float, default=30.0)
     parser.add_argument("--vix-on", type=float, default=20.0)
 
+    # EMA filter
+    parser.add_argument("--ema-filter", action="store_true", help="Enable EMA directional filter")
+    parser.add_argument("--ema-period", type=int, default=50, help="EMA period (default: 50)")
+
+    # Vol ceiling filter
+    parser.add_argument("--vol-ceiling", action="store_true", help="Enable realized vol ceiling filter")
+    parser.add_argument("--vol-ceiling-pct", type=float, default=20.0, help="Vol ceiling threshold %% (default: 20)")
+    parser.add_argument("--vol-lookback", type=int, default=20, help="Vol lookback days (default: 20)")
+
+    # Output
+    parser.add_argument("--label", default="jadecap", help="Output subdirectory label (default: jadecap)")
+
     # Bar size / logging
     parser.add_argument("--bar-minutes", type=int, default=5, help="Bar size in minutes (default: 5)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--skip-margin", action="store_true", help="Skip margin analysis")
     args = parser.parse_args()
 
     # 1. Create engine
@@ -176,6 +189,11 @@ def main():
         vix_filter_enabled=args.vix_filter,
         vix_off=args.vix_off,
         vix_on=args.vix_on,
+        ema_filter_enabled=args.ema_filter,
+        ema_period=args.ema_period,
+        vol_ceiling_enabled=args.vol_ceiling,
+        vol_ceiling_pct=args.vol_ceiling_pct,
+        vol_lookback_days=args.vol_lookback,
         order_id_tag="005",
     )
     strategy = JadeCapStrategy(config=strategy_config, vix_lookup=vix_lookup)
@@ -207,6 +225,11 @@ def main():
     print(f"Max Trades/Day: {args.max_trades} | Max/Side: {args.max_per_side}")
     if args.vix_filter:
         print(f"VIX Filter: OFF > {args.vix_off}, ON < {args.vix_on}")
+    if args.ema_filter:
+        print(f"EMA Filter: ON (period={args.ema_period})")
+    if args.vol_ceiling:
+        print(f"Vol Ceiling: ON ({args.vol_ceiling_pct}%, lookback={args.vol_lookback}d)")
+    print(f"Label: {args.label}")
     print()
 
     # Generate reports
@@ -255,7 +278,7 @@ def main():
             print(f"{'Losing Trades:':<25} {len(losses):>12}")
 
         # Save to CSV
-        output_dir = Path(__file__).parent / "results" / "jadecap"
+        output_dir = Path(__file__).parent / "results" / args.label
         output_dir.mkdir(parents=True, exist_ok=True)
         positions_report.to_csv(output_dir / "positions.csv")
         if fills_report is not None and not fills_report.empty:
@@ -264,11 +287,34 @@ def main():
 
         # Generate and open equity curve
         from plot_equity import plot_equity
-        title = f"JadeCap — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min, {entry_model_names.get(args.entry_model, '?')})"
+        title = f"JadeCap [{args.label}] — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min)"
         chart_path = plot_equity(str(output_dir / "positions.csv"), title)
         import subprocess
         subprocess.Popen(["cmd", "/c", "start", "", str(chart_path)],
                          creationflags=0x08000000)
+
+        # Margin analysis
+        if not args.skip_margin:
+            try:
+                from margin_analyzer import analyze_margin, print_margin_report, plot_margin_analysis, save_margin_summary
+                margin_result = analyze_margin(
+                    fills_csv=str(output_dir / "fills.csv"),
+                    positions_csv=str(output_dir / "positions.csv"),
+                    bars=bars,
+                    starting_capital=STARTING_CAPITAL,
+                    multiplier=multiplier,
+                )
+                print_margin_report(margin_result, label=args.label)
+                save_margin_summary(margin_result, str(output_dir))
+                margin_chart = plot_margin_analysis(
+                    margin_result, str(output_dir),
+                    title=f"Margin Analysis — JadeCap [{args.label}]",
+                )
+                if margin_chart:
+                    subprocess.Popen(["cmd", "/c", "start", "", str(margin_chart)],
+                                     creationflags=0x08000000)
+            except Exception as e:
+                print(f"\nWarning: Margin analysis failed: {e}")
     else:
         print("No trades were generated.")
 

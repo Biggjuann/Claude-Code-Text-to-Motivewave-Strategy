@@ -79,6 +79,7 @@ def main():
     # Bar size / logging
     parser.add_argument("--bar-minutes", type=int, default=5, help="Bar size in minutes (default: 5)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--skip-margin", action="store_true", help="Skip margin analysis")
     args = parser.parse_args()
 
     # 1. Create engine
@@ -236,6 +237,29 @@ def main():
         import subprocess
         subprocess.Popen(["cmd", "/c", "start", "", str(chart_path)],
                          creationflags=0x08000000)
+
+        # Margin analysis
+        if not args.skip_margin:
+            try:
+                from margin_analyzer import analyze_margin, print_margin_report, plot_margin_analysis, save_margin_summary
+                margin_result = analyze_margin(
+                    fills_csv=str(output_dir / "fills.csv"),
+                    positions_csv=str(output_dir / "positions.csv"),
+                    bars=bars,
+                    starting_capital=STARTING_CAPITAL,
+                    multiplier=multiplier,
+                )
+                print_margin_report(margin_result, label=args.label)
+                save_margin_summary(margin_result, str(output_dir))
+                margin_chart = plot_margin_analysis(
+                    margin_result, str(output_dir),
+                    title=f"Margin Analysis — LB Short [{args.label}]",
+                )
+                if margin_chart:
+                    subprocess.Popen(["cmd", "/c", "start", "", str(margin_chart)],
+                                     creationflags=0x08000000)
+            except Exception as e:
+                print(f"\nWarning: Margin analysis failed: {e}")
     else:
         print("No trades were generated.")
 

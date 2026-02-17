@@ -1,0 +1,141 @@
+# =====================================================================
+# Rithmic Live Trading Adapter — Configuration
+# =====================================================================
+# Copy this file to config.yaml and fill in your credentials.
+# Strategy-specific params are shown with defaults — uncomment to override.
+
+rithmic:
+  uri: "wss://rituz00100.rithmic.com:443"
+  system: "Rithmic Paper Trading"
+  user: "your_username"
+  password: "your_password"
+  exchange: "CME"
+  symbol: "ES"                 # Root symbol — auto-resolves to front-month (ESM6, ESU6, etc.)
+  account_id: "YOUR_ACCOUNT"
+  auto_roll: true              # Automatically roll to next contract before expiry
+  roll_days_before: 8          # Roll this many days before 3rd Friday expiration
+
+strategy:
+  # ---------------------------------------------------------------
+  # Pick ONE strategy name:
+  #   MagicLine | LB Short | IFVG | SwingReclaim | JadeCap | BrianStonk
+  # ---------------------------------------------------------------
+  name: "MagicLine"
+  bar_size_minutes: 5
+
+  # ==================== Shared Params ====================
+  contracts: 1
+  # dollars_per_contract: 0.0    # 0 = use fixed contracts
+  eod_flatten_time: "15:45"
+  tick_size: 0.25
+
+  # ==================== MagicLine ====================
+  # Long-only regressive S/R (LB line)
+  # length: 20
+  # touch_tolerance_ticks: 4
+  # zone_buffer_pts: 1.0
+  # came_from_pts: 5.0
+  # came_from_lookback: 10
+  # ema_filter_enabled: true
+  # ema_period: 21
+  # trade_start: "02:00"
+  # trade_end: "16:00"
+  # max_trades_per_day: 3
+  # stoploss_mode: "structural"     # "structural" or "fixed"
+  # stop_buffer_ticks: 20
+  # be_enabled: true
+  # be_trigger_pts: 10.0
+  # tp1_r: 3.0
+  # tp2_r: 10.0
+  # partial_enabled: true
+  # partial_pct: 25
+
+  # ==================== LB Short ====================
+  # Short-only LB breakdown with EMA filter, bar-1 confirm
+  # length: 20
+  # ema_period: 50
+  # ema_filter_enabled: true
+  # rth_start: "09:30"
+  # rth_end: "16:00"
+  # max_trades_per_day: 1
+  # stop_buffer_ticks: 20
+  # be_enabled: true
+  # be_trigger_pts: 10.0
+  # tp1_pts: 15.0
+  # partial_pct: 25
+  # trail_pts: 5.0
+
+  # ==================== IFVG ====================
+  # 3-bar shadow IFVG detection with zone retest
+  # shadow_threshold_pct: 30.0
+  # max_zone_wait: 30
+  # tp1_points: 20.0
+  # trail_points: 15.0
+  # stop_buffer_ticks: 40
+  # stop_max_pts: 40.0
+  # be_trigger_pts: 10.0
+  # max_trades_per_day: 3
+  # trade_start: "02:00"
+  # trade_end: "16:00"
+  # vol_regime_enabled: false
+
+  # ==================== SwingReclaim ====================
+  # Swing point break-then-reclaim
+  # pivot_strength: 45
+  # reclaim_window: 20
+  # stop_buffer_ticks: 4
+  # stop_min_pts: 2.0
+  # stop_max_pts: 40.0
+  # be_trigger_pts: 10.0
+  # be_enabled: true
+  # tp1_points: 20.0
+  # tp1_pct: 50
+  # trail_points: 15.0
+  # max_trades_per_day: 3
+  # trade_start: "09:30"
+  # trade_end: "16:00"
+  # session_filter_enabled: false
+
+  # ==================== JadeCap ====================
+  # Dual MMBM/MMSM 4-phase ICT state machines
+  # long_only: false
+  # short_only: false
+  # entry_model: 1                  # 0=Immediate, 1=FVG, 2=Both, 3=MSS Market
+  # strictness: 0                   # 0=Aggressive, 1=Balanced, 2=Conservative
+  # exit_model: 2                   # 0=RR, 1=TP1+TP2, 2=Scale+Trail, 3=Midday
+  # stop_mode: 0                    # 0=Fixed, 1=Structural
+  # stop_ticks: 40
+  # rr_multiple: 3.0
+  # partial_pct: 25
+  # partial_enabled: true
+  # pivot_strength: 10
+  # sweep_min_ticks: 2
+  # fvg_min_ticks: 2
+  # max_bars_fill: 30
+  # max_trades_per_day: 1
+  # max_per_side: 1
+  # ema_filter_enabled: false
+  # ema_period: 50
+
+  # ==================== BrianStonk ====================
+  # Multi-entry ICT engine (BR1/IF1/OB1)
+  # long_only: false
+  # short_only: false
+  # target_r: 1.0
+  # stop_default_pts: 20.0
+  # stop_min_pts: 18.0
+  # stop_max_pts: 25.0
+  # be_trigger_pts: 10.0
+  # max_trades_per_day: 6
+  # cooldown_minutes: 5
+  # fvg_min_gap_pts: 2.0
+  # trade_start: "09:30"
+  # trade_end: "16:00"
+
+risk:
+  max_daily_loss: 500.0         # dollars, hard stop for day
+  max_contracts: 5              # sanity cap
+  stale_tick_seconds: 30        # warn if no tick for this long during RTH
+
+paper_mode: true
+log_dir: "./logs"

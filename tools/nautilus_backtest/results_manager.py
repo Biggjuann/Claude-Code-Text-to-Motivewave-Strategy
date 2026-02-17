@@ -41,6 +41,13 @@ def load_positions(folder: Path) -> pd.DataFrame | None:
         df["pnl"] = df["realized_pnl"].apply(parse_pnl)
         if "ts_closed" in df.columns:
             df["ts_closed"] = pd.to_datetime(df["ts_closed"], utc=True)
+        if "ts_opened" in df.columns:
+            df["ts_opened"] = pd.to_datetime(df["ts_opened"], utc=True)
+        if "duration_ns" in df.columns:
+            df["duration_min"] = pd.to_numeric(df["duration_ns"], errors="coerce") / 1e9 / 60
+        for col in ("avg_px_open", "avg_px_close", "peak_qty", "realized_return"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
     except Exception:
         return None

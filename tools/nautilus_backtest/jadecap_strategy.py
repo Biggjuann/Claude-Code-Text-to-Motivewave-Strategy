@@ -137,6 +137,15 @@ class JadeCapConfig(StrategyConfig, frozen=True):
     vix_off: float = 30.0
     vix_on: float = 20.0
 
+    # EMA directional filter
+    ema_filter_enabled: bool = False
+    ema_period: int = 50
+
+    # Realized vol ceiling filter
+    vol_ceiling_enabled: bool = False
+    vol_ceiling_pct: float = 20.0
+    vol_lookback_days: int = 20
+
 
 # ==================== Strategy ====================
 
@@ -147,11 +156,21 @@ class JadeCapStrategy(Strategy):
 
         self.instrument_id = config.instrument_id
         self.bar_type = config.bar_type
-        self.tick_size = 0.01  # ratio-adjusted data
+        self.tick_size = 0.25  # ES tick size (must match MotiveWave instrument)
 
         # VIX filter
         self.vix_lookup = vix_lookup or {}
         self.vix_blocked: bool = False
+
+        # EMA filter state
+        self.ema_value: float = math.nan
+        self.ema_count: int = 0
+
+        # Vol ceiling filter state
+        self.daily_closes: list[float] = []
+        self.current_day_close: float = math.nan
+        self.realized_vol: float = math.nan
+        self.vol_blocked: bool = False
 
         # Bar history
         self.hist_highs: list[float] = []
@@ -249,6 +268,12 @@ class JadeCapStrategy(Strategy):
             self.hist_highs.pop(0)
             self.hist_lows.pop(0)
 
+        # Update EMA every bar (before warmup)
+        self._update_ema(c)
+
+        # Track current day close for realized vol
+        self.current_day_close = c
+
         # Warmup
         if self.bar_count < 20:
             return
@@ -293,6 +318,20 @@ class JadeCapStrategy(Strategy):
                     elif not self.vix_blocked and vix_close > cfg.vix_off:
                         self.vix_blocked = True
                         self.log.info(f"VIX filter ON: VIX={vix_close:.1f} > {cfg.vix_off}")
+
+            # Realized vol ceiling filter — capture prev day close, compute vol
+            if cfg.vol_ceiling_enabled and not math.isnan(self.current_day_close):
+                self.daily_closes.append(self.current_day_close)
+                if len(self.daily_closes) > cfg.vol_lookback_days + 5:
+                    self.daily_closes = self.daily_closes[-(cfg.vol_lookback_days + 5):]
+                self.realized_vol = self._compute_realized_vol()
+                if not math.isnan(self.realized_vol):
+                    was_blocked = self.vol_blocked
+                    self.vol_blocked = self.realized_vol > cfg.vol_ceiling_pct
+                    if self.vol_blocked and not was_blocked:
+                        self.log.info(f"Vol ceiling ON: realized={self.realized_vol:.1f}% > {cfg.vol_ceiling_pct}%")
+                    elif not self.vol_blocked and was_blocked:
+                        self.log.info(f"Vol ceiling OFF: realized={self.realized_vol:.1f}% <= {cfg.vol_ceiling_pct}%")
 
         # Track today's high/low
         if math.isnan(self.today_high) or h > self.today_high:
@@ -363,6 +402,10 @@ class JadeCapStrategy(Strategy):
         if self.vix_blocked:
             return
 
+        # Realized vol ceiling block
+        if self.vol_blocked:
+            return
+
         # Past EOD cutoff — no new entries
         if cfg.eod_close_enabled and bar_time_int >= cfg.eod_close_time:
             return
@@ -394,6 +437,13 @@ class JadeCapStrategy(Strategy):
                     can_trade_long = False
                 if self.current_direction < 0:
                     can_trade_short = False
+
+        # EMA directional filter: longs need close > EMA, shorts need close < EMA
+        if cfg.ema_filter_enabled and not math.isnan(self.ema_value):
+            if c <= self.ema_value:
+                can_trade_long = False
+            if c >= self.ema_value:
+                can_trade_short = False
 
         # Which setups to evaluate
         eval_mmbm = (cfg.setup_mode == 1) or cfg.enable_long
@@ -879,6 +929,28 @@ class JadeCapStrategy(Strategy):
         return True
 
     # ==================== Helpers ====================
+
+    def _update_ema(self, close: float):
+        period = self.config.ema_period
+        if math.isnan(self.ema_value):
+            self.ema_value = close
+            self.ema_count = 1
+        else:
+            self.ema_count += 1
+            k = 2.0 / (period + 1)
+            self.ema_value = close * k + self.ema_value * (1 - k)
+
+    def _compute_realized_vol(self) -> float:
+        """Annualized realized volatility from daily log returns."""
+        closes = self.daily_closes
+        n = self.config.vol_lookback_days
+        if len(closes) < n + 1:
+            return math.nan
+        recent = closes[-(n + 1):]
+        log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+        mean_r = sum(log_returns) / len(log_returns)
+        var = sum((r - mean_r) ** 2 for r in log_returns) / (len(log_returns) - 1)
+        return math.sqrt(var * 252) * 100  # annualized %
 
     def _get_displacement_ticks(self) -> int:
         s = self.config.confirmation_strictness
