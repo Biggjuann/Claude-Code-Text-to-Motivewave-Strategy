@@ -150,6 +150,42 @@ STRATEGIES = {
             "ema_period":        {"type": "int",   "default": 50,   "min": 10,  "max": 200, "step": 5,    "label": "EMA Period"},
         },
     },
+    "Williams VB": {
+        "script": "run_williams_r.py",
+        "params": {
+            "entry_mult":        {"type": "float", "default": 0.50, "min": 0.10,"max": 1.00,"step": 0.05, "label": "Entry Mult (× range)"},
+            "stop_mult":         {"type": "float", "default": 0.50, "min": 0.10,"max": 1.50,"step": 0.05, "label": "Stop Mult (× range)"},
+            "target_rr":         {"type": "float", "default": 3.0,  "min": 1.0, "max": 6.0, "step": 0.5,  "label": "Target R:R"},
+            "max_trades":        {"type": "int",   "default": 1,    "min": 1,   "max": 5,   "step": 1,    "label": "Max Trades/Day"},
+            "eod_time":          {"type": "int",   "default": 1640, "min": 1500,"max": 1700,"step": 10,   "label": "EOD Flatten (HHMM)"},
+        },
+    },
+    "ORB": {
+        "script": "run_donchian.py",
+        "params": {
+            "or_end_time":       {"type": "int",   "default": 945,  "min": 935, "max": 1030,"step": 5,    "label": "OR End Time (HHMM)"},
+            "atr_period":        {"type": "int",   "default": 14,   "min": 5,   "max": 30,  "step": 1,    "label": "ATR Period"},
+            "atr_stop_mult":     {"type": "float", "default": 0.50, "min": 0.25,"max": 3.0, "step": 0.25, "label": "ATR Stop Mult"},
+            "atr_tp_mult":       {"type": "float", "default": 0.0,  "min": 0.0, "max": 5.0, "step": 0.25, "label": "ATR TP Mult (0=EOD)"},
+            "no_trend_filter":   {"type": "bool",  "default": False, "label": "Disable Trend Filter"},
+            "trend_lookback":    {"type": "int",   "default": 5,    "min": 2,   "max": 20,  "step": 1,    "label": "Trend Lookback (days)"},
+            "max_trades":        {"type": "int",   "default": 1,    "min": 1,   "max": 5,   "step": 1,    "label": "Max Trades/Day"},
+            "entry_end":         {"type": "int",   "default": 1300, "min": 1000,"max": 1530,"step": 30,   "label": "Entry Cutoff (HHMM)"},
+            "eod_time":          {"type": "int",   "default": 1640, "min": 1500,"max": 1700,"step": 10,   "label": "EOD Flatten (HHMM)"},
+        },
+    },
+    "Pivot MR": {
+        "script": "run_atr_breakout.py",
+        "params": {
+            "atr_period":        {"type": "int",   "default": 14,   "min": 5,   "max": 30,  "step": 1,    "label": "ATR Period"},
+            "atr_stop_mult":     {"type": "float", "default": 1.5,  "min": 0.5, "max": 3.0, "step": 0.25, "label": "ATR Stop Mult"},
+            "no_trend_filter":   {"type": "bool",  "default": False, "label": "Disable Trend Filter"},
+            "trend_filter_days": {"type": "int",   "default": 5,    "min": 2,   "max": 20,  "step": 1,    "label": "Trend Filter Days"},
+            "max_trades":        {"type": "int",   "default": 1,    "min": 1,   "max": 5,   "step": 1,    "label": "Max Trades/Day"},
+            "entry_end":         {"type": "int",   "default": 1300, "min": 1000,"max": 1530,"step": 30,   "label": "Entry Cutoff (HHMM)"},
+            "eod_time":          {"type": "int",   "default": 1640, "min": 1500,"max": 1700,"step": 10,   "label": "EOD Flatten (HHMM)"},
+        },
+    },
 }
 
 
