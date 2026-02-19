@@ -14,37 +14,33 @@ import com.motivewave.platform.sdk.study.Study;
 import com.motivewave.platform.sdk.study.StudyHeader;
 
 /**
- * Displacement Candle Strategy v1.1
+ * ATR Trailing Momentum Strategy v1.0
  *
- * Detects "displacement" candles — bars whose range (H-L) significantly exceeds
- * the average range of recent bars, signaling strong momentum. Enters in the
- * direction of the displacement candle with stop at its extreme.
+ * Enter when the current bar's range (high - low) exceeds a multiple of
+ * the ATR, indicating volatility expansion / momentum. Direction is
+ * determined by bar close vs open (green = long, red = short).
  *
- * Robust across 16 years of ES data (2010-2026), profitable in 8/8 two-year
- * regime windows. Optimized for long-term stability, not recent performance.
+ * NO fixed take-profit -- position is managed entirely by an ATR-based
+ * trailing stop that locks in profits as the trend continues. Initial
+ * stop is set at a fixed ATR multiple from entry.
  *
- * Entry: bar range >= avg_range(lookback) x displacement_mult
- *   - Bullish (close > open) → LONG, stop = displacement candle low
- *   - Bearish (close < open) → SHORT, stop = displacement candle high
- * Target: R:R based or EOD exit.
- *
- * Robust defaults: 2.0x displacement, 10-bar lookback, 3:1 R:R, 1 trade/day
- * Full-period metrics: PF 1.13, Sharpe 0.61, $979K over 16yr, 8/8 regimes PASS
+ * Regime-tested: 6/8 windows profitable (2010-2026), Avg PF 1.08, Avg Sharpe 0.36,
+ * Total P&L $340K across all regimes.
  *
  * Architecture: Vector pattern
- *   - calculate() maintains rolling bar range buffer from RTH bars
- *   - onBarUpdate() handles displacement detection, trade entry, management, and EOD
+ *   - calculate() computes intraday ATR
+ *   - onBarUpdate() handles entry on volatility expansion, trailing stop management
  *
- * @version 1.1.0
+ * @version 1.0.0
  * @author MW Study Builder
  */
 @StudyHeader(
     namespace = "com.mw.studies",
-    id = "DISPLACEMENT_CANDLE",
+    id = "ATR_TRAIL",
     rb = "com.mw.studies.nls.strings",
-    name = "DISPLACEMENT_CANDLE",
-    label = "LBL_DISPLACEMENT_CANDLE",
-    desc = "DESC_DISPLACEMENT_CANDLE",
+    name = "ATR_TRAIL",
+    label = "LBL_ATR_TRAIL",
+    desc = "DESC_ATR_TRAIL",
     menu = "MW Generated",
     overlay = true,
     studyOverlay = true,
@@ -55,37 +51,42 @@ import com.motivewave.platform.sdk.study.StudyHeader;
     supportsRealizedPL = true,
     supportsTotalPL = true
 )
-public class DisplacementCandleStrategy extends Study
+public class ATRTrailStrategy extends Study
 {
     // ==================== Input Keys ====================
-    private static final String LOOKBACK = "lookback";
-    private static final String DISPLACEMENT_MULT = "displacementMult";
-    private static final String TARGET_RR = "targetRR";
+    private static final String ATR_PERIOD = "atrPeriod";
+    private static final String ENTRY_ATR_MULT = "entryAtrMult";
+    private static final String STOP_ATR_MULT = "stopAtrMult";
+    private static final String TRAIL_ATR_MULT = "trailAtrMult";
     private static final String CONTRACTS = "contracts";
     private static final String MAX_TRADES_DAY = "maxTradesDay";
+    private static final String ENTRY_START = "entryStart";
     private static final String ENTRY_END = "entryEnd";
     private static final String EOD_TIME = "eodTime";
 
     // ==================== Values ====================
-    enum Values { PLACEHOLDER }
+    enum Values { ATR }
 
     // ==================== State ====================
     private static final TimeZone NY_TZ = TimeZone.getTimeZone("America/New_York");
 
-    // Rolling bar range buffer (RTH bars only)
-    private final List<Double> ranges = new ArrayList<>();
-    private static final int MAX_RANGES = 50;
+    // Intraday ATR state
+    private final List<Double> trValues = new ArrayList<>();
+    private double prevClose = 0.0;
+    private double atr = 0.0;
 
     // Trade state
     private double entryPrice = 0.0;
     private double stopPrice = 0.0;
-    private double tpPrice = 0.0;
     private int tradeSide = 0; // 1=long, -1=short
+    private double bestPrice = 0.0; // best price since entry (for trailing)
 
     // Daily tracking
     private int tradesToday = 0;
     private int lastResetDay = -1;
     private boolean eodProcessed = false;
+
+    private static final int MAX_BUF = 100;
 
     // ==================== Initialize ====================
     @Override
@@ -94,12 +95,14 @@ public class DisplacementCandleStrategy extends Study
         var sd = createSD();
 
         var tab = sd.addTab("General");
-        var grp = tab.addGroup("Displacement Detection");
-        grp.addRow(new IntegerDescriptor(LOOKBACK, "Lookback Bars", 10, 5, 100, 1));
-        grp.addRow(new DoubleDescriptor(DISPLACEMENT_MULT, "Displacement Multiplier", 2.0, 1.0, 5.0, 0.1));
-        grp.addRow(new DoubleDescriptor(TARGET_RR, "Target R:R", 3.0, 0.5, 10.0, 0.25));
+        var grp = tab.addGroup("ATR Trail Parameters");
+        grp.addRow(new IntegerDescriptor(ATR_PERIOD, "ATR Period", 14, 5, 100, 1));
+        grp.addRow(new DoubleDescriptor(ENTRY_ATR_MULT, "Entry ATR Mult (bar range threshold)", 2.0, 0.5, 5.0, 0.25));
+        grp.addRow(new DoubleDescriptor(STOP_ATR_MULT, "Initial Stop ATR Mult", 1.5, 0.25, 5.0, 0.25));
+        grp.addRow(new DoubleDescriptor(TRAIL_ATR_MULT, "Trailing Stop ATR Mult", 3.0, 0.5, 10.0, 0.25));
 
         grp = tab.addGroup("Session");
+        grp.addRow(new IntegerDescriptor(ENTRY_START, "Entry Start (HHMM)", 935, 0, 2359, 1));
         grp.addRow(new IntegerDescriptor(ENTRY_END, "Entry Cutoff (HHMM)", 1530, 0, 2359, 1));
         grp.addRow(new IntegerDescriptor(MAX_TRADES_DAY, "Max Trades/Day", 1, 1, 10, 1));
 
@@ -118,31 +121,38 @@ public class DisplacementCandleStrategy extends Study
         grpMarkers.addRow(new MarkerDescriptor(Inputs.DOWN_MARKER, "Short Entry",
             Enums.MarkerType.TRIANGLE, Enums.Size.MEDIUM, defaults.getRed(), defaults.getLineColor(), true, true));
 
-        sd.addQuickSettings(CONTRACTS, DISPLACEMENT_MULT, TARGET_RR, LOOKBACK);
+        sd.addQuickSettings(CONTRACTS, ATR_PERIOD, ENTRY_ATR_MULT, TRAIL_ATR_MULT, MAX_TRADES_DAY);
 
         var desc = createRD();
-        desc.setLabelSettings(CONTRACTS, DISPLACEMENT_MULT, TARGET_RR);
+        desc.setLabelSettings(CONTRACTS, ENTRY_ATR_MULT, STOP_ATR_MULT, TRAIL_ATR_MULT);
+
+        desc.exportValue(new ValueDescriptor(Values.ATR, "ATR", new String[]{ATR_PERIOD}));
     }
+
+    @Override
+    public int getMinBars() { return 50; }
 
     // ==================== Lifecycle ====================
     @Override
     public void onActivate(OrderContext ctx)
     {
         resetTradeState();
-        info("=== Displacement Candle Strategy Activated ===");
+        info("=== ATR Trail Strategy Activated ===");
     }
 
     @Override
     public void onDeactivate(OrderContext ctx)
     {
-        info("=== Displacement Candle Strategy Deactivated ===");
+        info("=== ATR Trail Strategy Deactivated ===");
     }
 
     @Override
     public void clearState()
     {
         super.clearState();
-        ranges.clear();
+        trValues.clear();
+        prevClose = 0.0;
+        atr = 0.0;
         tradesToday = 0;
         lastResetDay = -1;
         eodProcessed = false;
@@ -153,11 +163,11 @@ public class DisplacementCandleStrategy extends Study
     {
         entryPrice = 0.0;
         stopPrice = 0.0;
-        tpPrice = 0.0;
         tradeSide = 0;
+        bestPrice = 0.0;
     }
 
-    // ==================== Calculate (Range buffer) ====================
+    // ==================== Calculate (ATR) ====================
     @Override
     protected void calculate(int index, DataContext ctx)
     {
@@ -168,6 +178,10 @@ public class DisplacementCandleStrategy extends Study
         int barTimeInt = getTimeInt(barTime, NY_TZ);
         int barDay = getDayOfYear(barTime, NY_TZ);
 
+        double high = series.getHigh(index);
+        double low = series.getLow(index);
+        double close = series.getClose(index);
+
         // Daily reset
         if (barDay != lastResetDay) {
             tradesToday = 0;
@@ -175,15 +189,35 @@ public class DisplacementCandleStrategy extends Study
             lastResetDay = barDay;
         }
 
-        // Only accumulate ranges from RTH bars (9:35-16:00)
+        // Only compute indicators from RTH bars (9:35-16:00)
         if (barTimeInt >= 935 && barTimeInt <= 1600) {
-            double high = series.getHigh(index);
-            double low = series.getLow(index);
-            double barRange = high - low;
-            ranges.add(barRange);
-            if (ranges.size() > MAX_RANGES) {
-                ranges.remove(0);
+            int atrPeriod = getSettings().getInteger(ATR_PERIOD, 14);
+
+            // True Range
+            double tr;
+            if (prevClose > 0) {
+                tr = Math.max(high - low, Math.max(Math.abs(high - prevClose), Math.abs(low - prevClose)));
+            } else {
+                tr = high - low;
             }
+            trValues.add(tr);
+
+            // Trim buffer
+            if (trValues.size() > MAX_BUF) {
+                trValues.subList(0, trValues.size() - MAX_BUF).clear();
+            }
+
+            // ATR (simple average of recent TR values)
+            if (trValues.size() >= atrPeriod) {
+                double atrSum = 0;
+                for (int i = trValues.size() - atrPeriod; i < trValues.size(); i++) {
+                    atrSum += trValues.get(i);
+                }
+                atr = atrSum / atrPeriod;
+                series.setDouble(index, Values.ATR, atr);
+            }
+
+            prevClose = close;
         }
 
         series.setComplete(index);
@@ -197,8 +231,13 @@ public class DisplacementCandleStrategy extends Study
         int index = series.size() - 1;
         if (index < 1) return;
 
+        Settings settings = getSettings();
+        Instrument instr = ctx.getInstrument();
+
+        double open = series.getOpen(index);
         double high = series.getHigh(index);
         double low = series.getLow(index);
+        double close = series.getClose(index);
 
         long barTime = series.getStartTime(index);
         int barTimeInt = getTimeInt(barTime, NY_TZ);
@@ -206,7 +245,7 @@ public class DisplacementCandleStrategy extends Study
         int position = ctx.getPosition();
 
         // ===== EOD Flatten =====
-        int eodTime = getSettings().getInteger(EOD_TIME, 1640);
+        int eodTime = settings.getInteger(EOD_TIME, 1640);
         if (barTimeInt >= eodTime && !eodProcessed) {
             if (position != 0) {
                 ctx.closeAtMarket();
@@ -217,31 +256,38 @@ public class DisplacementCandleStrategy extends Study
             return;
         }
 
-        // ===== Trade Management =====
+        // ===== Trade Management (Trailing Stop) =====
         if (position != 0 && tradeSide != 0) {
+            double trailAtrMult = settings.getDouble(TRAIL_ATR_MULT, 3.0);
+            double trailDist = (atr > 0) ? trailAtrMult * atr : trailAtrMult * 5.0;
+
             if (tradeSide == 1) { // long
+                // Update best price and trail stop up
+                if (high > bestPrice) {
+                    bestPrice = high;
+                    double newStop = instr.round(bestPrice - trailDist);
+                    if (newStop > stopPrice) {
+                        stopPrice = newStop;
+                    }
+                }
                 if (low <= stopPrice) {
                     ctx.closeAtMarket();
-                    info("STOP hit at " + fmt(stopPrice));
-                    resetTradeState();
-                    return;
-                }
-                if (tpPrice > 0 && high >= tpPrice) {
-                    ctx.closeAtMarket();
-                    info("TP hit at " + fmt(tpPrice));
+                    info(String.format("TRAIL STOP hit at %.2f (best=%.2f)", stopPrice, bestPrice));
                     resetTradeState();
                     return;
                 }
             } else { // short
+                // Update best price and trail stop down
+                if (low < bestPrice) {
+                    bestPrice = low;
+                    double newStop = instr.round(bestPrice + trailDist);
+                    if (newStop < stopPrice) {
+                        stopPrice = newStop;
+                    }
+                }
                 if (high >= stopPrice) {
                     ctx.closeAtMarket();
-                    info("STOP hit at " + fmt(stopPrice));
-                    resetTradeState();
-                    return;
-                }
-                if (tpPrice > 0 && low <= tpPrice) {
-                    ctx.closeAtMarket();
-                    info("TP hit at " + fmt(tpPrice));
+                    info(String.format("TRAIL STOP hit at %.2f (best=%.2f)", stopPrice, bestPrice));
                     resetTradeState();
                     return;
                 }
@@ -255,85 +301,62 @@ public class DisplacementCandleStrategy extends Study
         }
 
         // ===== Entry Logic =====
-        if (position != 0) return;
-
-        Settings settings = getSettings();
-        int lookback = settings.getInteger(LOOKBACK, 10);
-        if (ranges.size() < lookback + 1) return;
+        if (atr <= 0) return;
 
         int maxTrades = settings.getInteger(MAX_TRADES_DAY, 1);
         if (tradesToday >= maxTrades) return;
 
+        int entryStart = settings.getInteger(ENTRY_START, 935);
         int entryEnd = settings.getInteger(ENTRY_END, 1530);
-        if (barTimeInt < 935 || barTimeInt > entryEnd) return;
+        if (barTimeInt < entryStart || barTimeInt > entryEnd) return;
 
-        double open = series.getOpen(index);
-        double close = series.getClose(index);
-        double barRange = high - low;
-
-        // Compute average range of previous N bars (excluding current)
-        int bufSize = ranges.size();
-        double sumRange = 0;
-        for (int i = bufSize - 2; i >= bufSize - 1 - lookback && i >= 0; i--) {
-            sumRange += ranges.get(i);
-        }
-        double avgRange = sumRange / lookback;
-        if (avgRange <= 0) return;
-
-        // Check displacement threshold
-        double displacementMult = settings.getDouble(DISPLACEMENT_MULT, 2.0);
-        double ratio = barRange / avgRange;
-        if (ratio < displacementMult) return;
-
-        // Direction: green candle → LONG, red candle → SHORT
-        boolean isBullish = close > open;
-        boolean isBearish = close < open;
-        if (!isBullish && !isBearish) return; // doji, skip
-
-        Instrument instr = ctx.getInstrument();
-        double targetRR = settings.getDouble(TARGET_RR, 3.0);
+        double entryAtrMult = settings.getDouble(ENTRY_ATR_MULT, 2.0);
+        double stopAtrMult = settings.getDouble(STOP_ATR_MULT, 1.5);
         int contracts = settings.getInteger(CONTRACTS, 2);
 
-        if (isBullish) {
-            double stop = instr.round(low);
-            double risk = close - stop;
-            if (risk <= 0) return;
-            double tp = targetRR > 0 ? instr.round(close + targetRR * risk) : 0.0;
+        double barRange = high - low;
+        double threshold = entryAtrMult * atr;
 
+        if (barRange <= threshold) return;
+
+        double stopDist = stopAtrMult * atr;
+        if (stopDist <= 0) return;
+
+        // Long: volatility expansion + bullish close
+        if (close > open) {
+            double stop = instr.round(close - stopDist);
             ctx.buy(contracts);
             entryPrice = close;
             stopPrice = stop;
-            tpPrice = tp;
             tradeSide = 1;
+            bestPrice = close;
             tradesToday++;
 
-            info(String.format("LONG: entry=%.2f, stop=%.2f, TP=%.2f, ratio=%.1fx",
-                close, stop, tp, ratio));
+            info(String.format("LONG: entry=%.2f, stop=%.2f, barRange=%.2f, ATR=%.2f (trail only, no TP)",
+                close, stop, barRange, atr));
 
-            drawTradeLevels(barTime, close, stop, tp, 1);
+            drawEntryLevel(barTime, close, stop);
 
             var marker = settings.getMarker(Inputs.UP_MARKER);
             if (marker != null && marker.isEnabled()) {
                 addFigure(new Marker(new Coordinate(barTime, low),
                     Enums.Position.BOTTOM, marker, "Long @ " + fmt(close)));
             }
-        } else {
-            double stop = instr.round(high);
-            double risk = stop - close;
-            if (risk <= 0) return;
-            double tp = targetRR > 0 ? instr.round(close - targetRR * risk) : 0.0;
-
+        }
+        // Short: volatility expansion + bearish close
+        else if (close < open) {
+            double stop = instr.round(close + stopDist);
             ctx.sell(contracts);
             entryPrice = close;
             stopPrice = stop;
-            tpPrice = tp;
             tradeSide = -1;
+            bestPrice = close;
             tradesToday++;
 
-            info(String.format("SHORT: entry=%.2f, stop=%.2f, TP=%.2f, ratio=%.1fx",
-                close, stop, tp, ratio));
+            info(String.format("SHORT: entry=%.2f, stop=%.2f, barRange=%.2f, ATR=%.2f (trail only, no TP)",
+                close, stop, barRange, atr));
 
-            drawTradeLevels(barTime, close, stop, tp, -1);
+            drawEntryLevel(barTime, close, stop);
 
             var marker = settings.getMarker(Inputs.DOWN_MARKER);
             if (marker != null && marker.isEnabled()) {
@@ -343,47 +366,35 @@ public class DisplacementCandleStrategy extends Study
         }
     }
 
-    // ==================== Signal Handler ====================
-    @Override
-    public void onSignal(OrderContext ctx, Object signal)
-    {
-        // All trade logic handled in onBarUpdate()
-    }
-
     // ==================== Drawing ====================
-    private static final java.awt.Color SL_COLOR = new java.awt.Color(220, 50, 50);   // red
-    private static final java.awt.Color TP_COLOR = new java.awt.Color(50, 180, 50);   // green
-    private static final java.awt.Color ENTRY_COLOR = new java.awt.Color(100, 150, 255); // blue
+    private static final java.awt.Color SL_COLOR = new java.awt.Color(220, 50, 50);
+    private static final java.awt.Color ENTRY_COLOR = new java.awt.Color(100, 150, 255);
     private static final java.awt.Stroke DASH_STROKE = new java.awt.BasicStroke(
         1.5f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER,
         10.0f, new float[]{6.0f, 4.0f}, 0.0f);
     private static final java.awt.Font LEVEL_FONT = new java.awt.Font("SansSerif", java.awt.Font.PLAIN, 11);
 
-    private void drawTradeLevels(long entryTime, double entry, double stop, double tp, int side)
+    private void drawEntryLevel(long entryTime, double entry, double stop)
     {
-        long endTime = entryTime + 4L * 60 * 60 * 1000; // 4 hours ahead
+        long endTime = entryTime + 4L * 60 * 60 * 1000;
 
-        // Entry level (solid blue)
         Line entryLine = new Line(entryTime, entry, endTime, entry);
         entryLine.setColor(ENTRY_COLOR);
         entryLine.setText("Entry " + fmt(entry), LEVEL_FONT);
         addFigure(entryLine);
 
-        // Stop loss (dashed red)
         Line slLine = new Line(entryTime, stop, endTime, stop);
         slLine.setColor(SL_COLOR);
         slLine.setStroke(DASH_STROKE);
-        slLine.setText("SL " + fmt(stop), LEVEL_FONT);
+        slLine.setText("SL " + fmt(stop) + " (trail)", LEVEL_FONT);
         addFigure(slLine);
+    }
 
-        // Take profit (dashed green)
-        if (tp > 0) {
-            Line tpLine = new Line(entryTime, tp, endTime, tp);
-            tpLine.setColor(TP_COLOR);
-            tpLine.setStroke(DASH_STROKE);
-            tpLine.setText("TP " + fmt(tp), LEVEL_FONT);
-            addFigure(tpLine);
-        }
+    // ==================== Signal Handler ====================
+    @Override
+    public void onSignal(OrderContext ctx, Object signal)
+    {
+        // All trade logic handled in onBarUpdate()
     }
 
     // ==================== Utility ====================

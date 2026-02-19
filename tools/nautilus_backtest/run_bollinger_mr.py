@@ -1,12 +1,13 @@
 """
-Displacement Candle Strategy — NautilusTrader Backtest Runner.
+Unger First-Bar Mean Reversion Strategy — NautilusTrader Backtest Runner.
 
 Usage:
-    python run_displacement.py [--start 2024-01-01] [--end 2026-01-01]
-    python run_displacement.py --displacement-mult 2.0 --target-rr 3.0
+    python run_bollinger_mr.py [--start 2024-01-01] [--end 2026-01-01]
+    python run_bollinger_mr.py --start 2024-01-01 --end 2026-01-01 --mes --dollars-per-contract 5000
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +21,7 @@ from nautilus_trader.model.objects import Money
 
 from instrument import create_es_instrument
 from data_loader import load_es_bars
-from displacement_strategy import DisplacementStrategy, DisplacementConfig
+from bollinger_mr_strategy import BollingerMRStrategy, BollingerMRConfig
 
 ES_ZIP_PATH = r"C:\Users\jung_\Downloads\Backtesting data\ES_full_1min_continuous_ratio_adjusted_13wjmr (1).zip"
 DEFAULT_START = "2024-01-01"
@@ -29,38 +30,36 @@ STARTING_CAPITAL = 25_000.0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Displacement Candle Strategy Backtest")
+    parser = argparse.ArgumentParser(description="Unger First-Bar Mean Reversion Backtest")
     parser.add_argument("--start", default=DEFAULT_START, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=DEFAULT_END, help="End date YYYY-MM-DD")
 
-    # Displacement params
-    parser.add_argument("--lookback", type=int, default=10, help="Lookback bars for avg range")
-    parser.add_argument("--displacement-mult", type=float, default=2.0, help="Displacement threshold multiplier")
-    parser.add_argument("--target-rr", type=float, default=3.0, help="Target R:R multiple (0=EOD)")
-    parser.add_argument("--trail-after-rr", type=float, default=0.0, help="Activate trail after N R (0=off)")
-    parser.add_argument("--trail-points", type=float, default=0.0, help="Trail distance in points (0=off)")
+    # First-bar displacement params
+    parser.add_argument("--displacement-pct", type=float, default=0.0035, help="Displacement from first bar (0.35%%)")
+    parser.add_argument("--adr-period", type=int, default=14, help="Average Daily Range lookback")
+    parser.add_argument("--adr-stop-mult", type=float, default=1.5, help="Stop = mult * ADR")
+    parser.add_argument("--adr-tp-mult", type=float, default=0, help="TP = mult * ADR (0=disabled)")
+    parser.add_argument("--no-fb-tp", action="store_true", help="Disable first-bar midpoint TP")
 
     # Session
     parser.add_argument("--max-trades", type=int, default=1)
-    parser.add_argument("--entry-end", type=int, default=1530, help="No entries after this time")
     parser.add_argument("--eod-time", type=int, default=1640)
 
     # Sizing
     parser.add_argument("--contracts", type=int, default=10)
-    parser.add_argument("--dollars-per-contract", type=float, default=0, help="Dynamic sizing (0=fixed)")
-    parser.add_argument("--mes", action="store_true", help="Use MES instead of ES")
+    parser.add_argument("--dollars-per-contract", type=float, default=0, help="Dynamic sizing: $ per contract (0=fixed)")
+    parser.add_argument("--mes", action="store_true", help="Use MES ($5/point) instead of ES ($50/point)")
 
     # Output
     parser.add_argument("--bar-minutes", type=int, default=5, help="Bar size in minutes")
-    parser.add_argument("--label", default="displacement", help="Output subdirectory label")
+    parser.add_argument("--label", default="bollinger_mr", help="Output subdirectory label")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--skip-margin", action="store_true", help="Skip margin analysis")
-    parser.add_argument("--vix-filter", action="store_true", help="(ignored, for dashboard compat)")
     args = parser.parse_args()
 
     # 1. Create engine
     engine_config = BacktestEngineConfig(
-        trader_id="BACKTESTER-014",
+        trader_id="BACKTESTER-012",
         logging=LoggingConfig(log_level=args.log_level),
         risk_engine=RiskEngineConfig(bypass=True),
     )
@@ -93,22 +92,21 @@ def main():
     engine.add_data(bars)
 
     # 5. Create strategy
-    strategy_config = DisplacementConfig(
+    strategy_config = BollingerMRConfig(
         instrument_id=es.id,
         bar_type=bar_type,
-        lookback=args.lookback,
-        displacement_mult=args.displacement_mult,
-        target_rr=args.target_rr,
-        trail_after_rr=args.trail_after_rr,
-        trail_points=args.trail_points,
+        displacement_pct=args.displacement_pct,
+        adr_period=args.adr_period,
+        adr_stop_mult=args.adr_stop_mult,
+        adr_tp_mult=args.adr_tp_mult,
+        tp_at_first_bar=not args.no_fb_tp,
         max_trades_per_day=args.max_trades,
-        entry_end=args.entry_end,
         eod_time=args.eod_time,
         contracts=args.contracts,
         dollars_per_contract=args.dollars_per_contract,
-        order_id_tag="014",
+        order_id_tag="012",
     )
-    strategy = DisplacementStrategy(config=strategy_config)
+    strategy = BollingerMRStrategy(config=strategy_config)
     engine.add_strategy(strategy)
 
     # 6. Run
@@ -117,7 +115,7 @@ def main():
 
     # 7. Report results
     print("\n" + "=" * 60)
-    print("DISPLACEMENT CANDLE — BACKTEST RESULTS")
+    print("UNGER FIRST-BAR MEAN REVERSION — BACKTEST RESULTS")
     print("=" * 60)
     print(f"Period: {args.start} to {args.end}")
     print(f"Starting Capital: ${STARTING_CAPITAL:,.0f}")
@@ -127,12 +125,15 @@ def main():
         instrument_label = f"{'MES' if args.mes else 'ES'} x {args.contracts}"
     print(f"Instrument: {instrument_label}")
     print(f"Bar Size: {args.bar_minutes}-min")
-    print(f"Direction: Long + Short")
-    print(f"Displacement: {args.displacement_mult}x avg range ({args.lookback}-bar lookback)")
-    tp_label = f"{args.target_rr}:1 R:R" if args.target_rr > 0 else "EOD"
-    trail_label = f", trail {args.trail_points}pts after {args.trail_after_rr}R" if args.trail_after_rr > 0 else ""
-    print(f"Stop: displacement candle extreme | TP: {tp_label}{trail_label}")
-    print(f"Max Trades/Day: {args.max_trades}")
+    print(f"Direction: Long + Short (Mean Reversion / Fade)")
+    print(f"Displacement: {args.displacement_pct*100:.2f}% from first RTH bar")
+    if not args.no_fb_tp:
+        tp_label = "first-bar midpoint"
+    elif args.adr_tp_mult > 0:
+        tp_label = f"{args.adr_tp_mult}x ADR"
+    else:
+        tp_label = "EOD"
+    print(f"Stop: {args.adr_stop_mult}x ADR | TP: {tp_label} | Exit: EOD")
     print()
 
     # Generate reports
@@ -190,7 +191,7 @@ def main():
 
         # Generate and open equity curve
         from plot_equity import plot_equity
-        title = f"Displacement — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min)"
+        title = f"Unger First-Bar MR — {args.start} to {args.end} ({instrument_label}, {args.bar_minutes}min)"
         chart_path = plot_equity(str(output_dir / "positions.csv"), title)
         import subprocess
         subprocess.Popen(["cmd", "/c", "start", "", str(chart_path)],
@@ -207,11 +208,11 @@ def main():
                     starting_capital=STARTING_CAPITAL,
                     multiplier=multiplier,
                 )
-                print_margin_report(margin_result, label="Displacement")
+                print_margin_report(margin_result, label="Unger First-Bar MR")
                 save_margin_summary(margin_result, str(output_dir))
                 margin_chart = plot_margin_analysis(
                     margin_result, str(output_dir),
-                    title="Margin Analysis — Displacement",
+                    title="Margin Analysis — Unger First-Bar MR",
                 )
                 if margin_chart:
                     subprocess.Popen(["cmd", "/c", "start", "", str(margin_chart)],

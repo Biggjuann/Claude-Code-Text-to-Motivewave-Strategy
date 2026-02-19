@@ -60,9 +60,9 @@ class IFVGRetestConfig(StrategyConfig, frozen=True):
     enable_long: bool = True
     enable_short: bool = True
 
-    # IFVG Detection
-    shadow_threshold_pct: float = 30.0  # percentage (0-100)
-    max_wait_bars: int = 30
+    # IFVG Detection (optimized across 2010-2026, 16yr partial sweep)
+    shadow_threshold_pct: float = 20.0  # percentage (0-100), optimized: 20%
+    max_wait_bars: int = 20             # optimized: 20 bars
 
     # VIX Filter (hysteresis: stop at vix_off, resume at vix_on)
     vix_filter_enabled: bool = False
@@ -89,12 +89,12 @@ class IFVGRetestConfig(StrategyConfig, frozen=True):
     be_enabled: bool = True
     be_trigger_pts: float = 10.0
 
-    # Targets
-    tp1_points: float = 20.0
+    # Targets (optimized across 2010-2026)
+    tp1_points: float = 25.0   # optimized: 25pts
     tp1_pct: int = 50          # % of contracts at TP1
 
     # Trail
-    trail_points: float = 15.0
+    trail_points: float = 10.0  # optimized: 10pts
 
     # EOD
     eod_enabled: bool = True

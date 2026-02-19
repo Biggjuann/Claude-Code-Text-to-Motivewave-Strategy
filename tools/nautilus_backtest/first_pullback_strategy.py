@@ -1,13 +1,17 @@
 """
-Williams Volatility Breakout Strategy — NautilusTrader port.
+First Pullback After Breakout Strategy -- NautilusTrader port.
 
-Based on Larry Williams' actual World Cup Championship winning system.
-Core logic: enter when price moves a percentage of yesterday's range
-away from today's open. This captures volatility expansion that tends
-to continue in the breakout direction.
+Tracks N-bar high/low on RTH bars. When price makes a new N-bar high,
+flags "breakout_up". Then waits for the first red bar (close < open)
+as the pullback. Enters long at close of that pullback bar. Similarly
+for short: new N-bar low flags "breakout_down", first green bar is
+the pullback, enter short at close.
 
-Reference: "Long-Term Secrets to Short-Term Trading" by Larry Williams.
-Entry = Open ± (Yesterday_Range × Multiplier), stop = range-based, target = R:R.
+Stop below the pullback bar low (for long) / above pullback bar high
+(for short). TP at R:R ratio.
+
+This captures the "first pullback" setup -- the highest-probability
+continuation entry after a breakout.
 """
 
 import math
@@ -25,17 +29,16 @@ from nautilus_trader.trading.strategy import Strategy
 
 # ==================== Config ====================
 
-class WilliamsRConfig(StrategyConfig, frozen=True):
+class FirstPullbackConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     bar_type: BarType
 
-    # Williams volatility breakout params (optimized across 2010-2026, 16yr)
-    entry_mult: float = 0.60   # entry = open ± range * mult (optimized: 0.60)
-    stop_mult: float = 0.30    # stop = entry ∓ range * stop_mult (optimized: 0.30)
-    target_rr: float = 3.0     # target as R-multiple (optimized: 3:1)
+    # Breakout detection
+    breakout_lookback: int = 20
+    target_rr: float = 3.0
 
     # Session
-    entry_start: int = 935     # first RTH bar
+    entry_start: int = 935
     entry_end: int = 1530
     max_trades_per_day: int = 1
     eod_time: int = 1640
@@ -45,36 +48,37 @@ class WilliamsRConfig(StrategyConfig, frozen=True):
     dollars_per_contract: float = 0.0
 
 
+
 # ==================== Strategy ====================
 
-class WilliamsRStrategy(Strategy):
+class FirstPullbackStrategy(Strategy):
 
-    def __init__(self, config: WilliamsRConfig):
+    def __init__(self, config: FirstPullbackConfig):
         super().__init__(config)
 
         self.instrument_id = config.instrument_id
         self.bar_type = config.bar_type
 
         # Daily OHLC from RTH bars
-        self.daily_opens: list[float] = []
         self.daily_highs: list[float] = []
         self.daily_lows: list[float] = []
         self.daily_closes: list[float] = []
         self.max_daily = 50
 
         # Current day RTH tracking
-        self.rth_open: float = math.nan
         self.rth_high: float = -math.inf
         self.rth_low: float = math.inf
         self.rth_close: float = math.nan
         self.rth_started: bool = False
 
-        # Today's trigger levels (set at start of RTH)
-        self.long_trigger: float = math.nan
-        self.short_trigger: float = math.nan
-        self.yesterday_range: float = 0.0
-        self.today_open: float = math.nan
-        self.triggers_set: bool = False
+        # Recent RTH bar data (for N-bar high/low)
+        self.recent_highs: list[float] = []
+        self.recent_lows: list[float] = []
+        self.recent_closes: list[float] = []
+
+        # Breakout state
+        self.breakout_up: bool = False
+        self.breakout_down: bool = False
 
         # Trade state
         self.entry_price: float = 0.0
@@ -92,7 +96,7 @@ class WilliamsRStrategy(Strategy):
 
     def on_start(self):
         self.subscribe_bars(self.bar_type)
-        self.log.info("Williams Volatility Breakout started")
+        self.log.info("First Pullback After Breakout started")
 
     def on_stop(self):
         self.close_all_positions(self.instrument_id)
@@ -118,7 +122,6 @@ class WilliamsRStrategy(Strategy):
         # Track RTH OHLC for daily aggregation
         if 935 <= bar_time_int <= 1600:
             if not self.rth_started:
-                self.rth_open = o
                 self.rth_high = h
                 self.rth_low = l
                 self.rth_started = True
@@ -129,50 +132,36 @@ class WilliamsRStrategy(Strategy):
 
         # ===== Daily reset =====
         if bar_day != self.last_reset_day:
-            # Archive previous day's RTH data
-            if self.rth_started and not math.isnan(self.rth_open):
-                self.daily_opens.append(self.rth_open)
+            if self.rth_started and not math.isnan(self.rth_close):
                 self.daily_highs.append(self.rth_high)
                 self.daily_lows.append(self.rth_low)
                 self.daily_closes.append(self.rth_close)
-                if len(self.daily_opens) > self.max_daily:
-                    self.daily_opens.pop(0)
+                if len(self.daily_highs) > self.max_daily:
                     self.daily_highs.pop(0)
                     self.daily_lows.pop(0)
                     self.daily_closes.pop(0)
 
-            # Reset RTH tracking
-            self.rth_open = math.nan
             self.rth_high = -math.inf
             self.rth_low = math.inf
             self.rth_close = math.nan
             self.rth_started = False
 
-            # Reset daily trade state
             self.trades_today = 0
             self.eod_processed = False
-            self.triggers_set = False
-            self.long_trigger = math.nan
-            self.short_trigger = math.nan
-            self.today_open = math.nan
+            self.breakout_up = False
+            self.breakout_down = False
             self.last_reset_day = bar_day
 
-        # ===== Set triggers on first RTH bar =====
-        if bar_time_int == 935 and not self.triggers_set and len(self.daily_highs) >= 1:
-            yest_high = self.daily_highs[-1]
-            yest_low = self.daily_lows[-1]
-            self.yesterday_range = yest_high - yest_low
-
-            if self.yesterday_range > 0:
-                self.today_open = o  # RTH open price (the bar's open is the 9:30 price)
-                self.long_trigger = self.today_open + self.yesterday_range * cfg.entry_mult
-                self.short_trigger = self.today_open - self.yesterday_range * cfg.entry_mult
-                self.triggers_set = True
-                self.log.info(
-                    f"Triggers: open={self.today_open:.2f}, "
-                    f"long={self.long_trigger:.2f}, short={self.short_trigger:.2f}, "
-                    f"yest_range={self.yesterday_range:.2f}"
-                )
+        # ===== Update bar history on RTH bars =====
+        if 935 <= bar_time_int <= 1600:
+            self.recent_highs.append(h)
+            self.recent_lows.append(l)
+            self.recent_closes.append(c)
+            max_hist = cfg.breakout_lookback + 5
+            if len(self.recent_highs) > max_hist:
+                self.recent_highs.pop(0)
+                self.recent_lows.pop(0)
+                self.recent_closes.pop(0)
 
         # ===== EOD flatten =====
         if bar_time_int >= cfg.eod_time and not self.eod_processed:
@@ -195,31 +184,55 @@ class WilliamsRStrategy(Strategy):
         if self.entry_price > 0:
             self._reset_trade_state()
 
-        # ===== Entry conditions =====
-        if not self.triggers_set:
+        # ===== Breakout detection and pullback entry =====
+        if len(self.recent_highs) < cfg.breakout_lookback + 1:
             return
         if self.trades_today >= cfg.max_trades_per_day:
             return
         if not (cfg.entry_start <= bar_time_int <= cfg.entry_end):
             return
 
-        # Long breakout: bar high exceeds long trigger
-        if not math.isnan(self.long_trigger) and h > self.long_trigger:
-            stop_dist = self.yesterday_range * cfg.stop_mult
-            stop = c - stop_dist
+        # N-bar high/low (excluding current bar)
+        prev_highs = self.recent_highs[-(cfg.breakout_lookback + 1):-1]
+        prev_lows = self.recent_lows[-(cfg.breakout_lookback + 1):-1]
+
+        if len(prev_highs) < cfg.breakout_lookback:
+            return
+
+        n_bar_high = max(prev_highs)
+        n_bar_low = min(prev_lows)
+
+        # Detect breakout
+        if c > n_bar_high:
+            self.breakout_up = True
+            self.breakout_down = False
+            self.log.info(f"Breakout UP: close={c:.2f} > {cfg.breakout_lookback}-bar high={n_bar_high:.2f}")
+            return  # wait for pullback
+
+        if c < n_bar_low:
+            self.breakout_down = True
+            self.breakout_up = False
+            self.log.info(f"Breakout DOWN: close={c:.2f} < {cfg.breakout_lookback}-bar low={n_bar_low:.2f}")
+            return  # wait for pullback
+
+        # Check for pullback entry
+        # Long pullback: breakout_up flagged, current bar is red (pullback)
+        if self.breakout_up and c < o:
+            stop = l  # stop below pullback bar low
             risk = abs(c - stop)
             if risk > 0:
                 tp = c + cfg.target_rr * risk
                 self._enter_trade(c, OrderSide.BUY, 1, stop, tp)
+                self.breakout_up = False
 
-        # Short breakout: bar low breaks short trigger
-        elif not math.isnan(self.short_trigger) and l < self.short_trigger:
-            stop_dist = self.yesterday_range * cfg.stop_mult
-            stop = c + stop_dist
+        # Short pullback: breakout_down flagged, current bar is green (pullback)
+        elif self.breakout_down and c > o:
+            stop = h  # stop above pullback bar high
             risk = abs(stop - c)
             if risk > 0:
                 tp = c - cfg.target_rr * risk
                 self._enter_trade(c, OrderSide.SELL, -1, stop, tp)
+                self.breakout_down = False
 
     # ==================== Entry ====================
 
@@ -242,18 +255,18 @@ class WilliamsRStrategy(Strategy):
         self.trade_side = direction
         self.trades_today += 1
 
-        label = "LONG" if direction == 1 else "SHORT"
+        label = "LONG (pullback)" if direction == 1 else "SHORT (pullback)"
         risk = abs(close - stop)
         self.log.info(
             f"{label}: entry={close:.2f}, stop={stop:.2f}, TP={tp:.2f}, "
-            f"risk={risk:.2f}, yest_range={self.yesterday_range:.2f}"
+            f"risk={risk:.2f}"
         )
 
     # ==================== Position Management ====================
 
     def _manage_position(self, position: Position, high: float, low: float,
                          close: float):
-        if self.trade_side == 1:  # long
+        if self.trade_side == 1:  # LONG
             if low <= self.stop_price:
                 self.close_position(position)
                 self.log.info(f"STOP hit at {self.stop_price:.2f}")
@@ -264,7 +277,7 @@ class WilliamsRStrategy(Strategy):
                 self.log.info(f"TP hit at {self.tp_price:.2f}")
                 self._reset_trade_state()
                 return
-        else:  # short
+        else:  # SHORT
             if high >= self.stop_price:
                 self.close_position(position)
                 self.log.info(f"STOP hit at {self.stop_price:.2f}")

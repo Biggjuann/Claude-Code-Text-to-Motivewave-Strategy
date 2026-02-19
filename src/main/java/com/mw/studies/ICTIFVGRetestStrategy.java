@@ -179,9 +179,9 @@ public class ICTIFVGRetestStrategy extends Study
         grp.addRow(new BooleanDescriptor(ENABLE_SHORT, "Enable Short Setups", true));
 
         grp = tab.addGroup("IFVG Detection");
-        grp.addRow(new DoubleDescriptor(THR_PCT, "Shadow Threshold %", 30.0, 0, 100, 0.1));
+        grp.addRow(new DoubleDescriptor(THR_PCT, "Shadow Threshold %", 20.0, 0, 100, 0.1));
         grp.addRow(new IntegerDescriptor(EXT, "IFVG Extension (bars)", 8, 0, 5000, 1));
-        grp.addRow(new IntegerDescriptor(MAX_WAIT, "Max Wait for Retest (bars)", 30, 5, 200, 1));
+        grp.addRow(new IntegerDescriptor(MAX_WAIT, "Max Wait for Retest (bars)", 20, 5, 200, 1));
         grp.addRow(new IntegerDescriptor(MAX_ZONES, "Max Active Zones", 500, 50, 2000, 50));
 
         // ===== Tab: Entry =====
@@ -211,11 +211,11 @@ public class ICTIFVGRetestStrategy extends Study
         // ===== Tab: Targets =====
         tab = sd.addTab("Targets");
         grp = tab.addGroup("TP1 (Partial)");
-        grp.addRow(new DoubleDescriptor(TP1_POINTS, "TP1 Distance (points)", 20.0, 0.25, 200.0, 0.25));
+        grp.addRow(new DoubleDescriptor(TP1_POINTS, "TP1 Distance (points)", 25.0, 0.25, 200.0, 0.25));
         grp.addRow(new IntegerDescriptor(TP1_PCT, "TP1 % of Contracts", 50, 1, 99, 1));
 
         grp = tab.addGroup("Runner Trail");
-        grp.addRow(new DoubleDescriptor(TRAIL_POINTS, "Trail Distance (points)", 15.0, 0.25, 100.0, 0.25));
+        grp.addRow(new DoubleDescriptor(TRAIL_POINTS, "Trail Distance (points)", 10.0, 0.25, 100.0, 0.25));
 
         // ===== Tab: EOD =====
         tab = sd.addTab("EOD");

@@ -31,18 +31,18 @@ class DisplacementConfig(StrategyConfig, frozen=True):
     bar_type: BarType
 
     # Displacement detection
-    lookback: int = 20           # bars to average for "normal" range
-    displacement_mult: float = 1.5  # current range must be >= avg * mult
+    lookback: int = 10           # bars to average for "normal" range
+    displacement_mult: float = 2.0  # current range must be >= avg * mult
 
     # Risk management
-    target_rr: float = 2.0       # TP as R-multiple (0 = EOD only)
+    target_rr: float = 3.0       # TP as R-multiple (0 = EOD only)
     trail_after_rr: float = 0.0  # start trailing after this R-multiple (0 = no trail)
     trail_points: float = 0.0    # trail distance in points (0 = no trail)
 
     # Session
     entry_start: int = 935
     entry_end: int = 1530
-    max_trades_per_day: int = 2
+    max_trades_per_day: int = 1
     eod_time: int = 1640
 
     # Sizing
