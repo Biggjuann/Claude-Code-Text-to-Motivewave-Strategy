@@ -264,9 +264,14 @@ def analyze_regime(asset_df, vix_close, vix9d_close=None):
 # OUTPUT
 # =============================================================================
 
-# VIX hysteresis filter thresholds
+# VIX hysteresis filter thresholds (general)
 VIX_BLOCK_ABOVE = 30.0   # stop trading when VIX closes above this
 VIX_RESUME_BELOW = 20.0  # resume trading when VIX closes below this
+
+# Displacement strategy VIX band thresholds
+DISP_VIX_CEILING = 25.0      # block above
+DISP_VIX_RESUME = 18.0       # resume below ceiling
+DISP_VIX_FLOOR = 15.0        # block below
 
 
 def compute_vix_filter(vix_close, previous_blocked=False):
@@ -283,17 +288,48 @@ def compute_vix_filter(vix_close, previous_blocked=False):
     return blocked
 
 
+def compute_displacement_vix_filter(vix_close, prev_ceiling_blocked=False, prev_floor_blocked=False):
+    """
+    Compute displacement strategy VIX band filter state.
+    Ceiling hysteresis: once VIX > 25, blocked until VIX < 18.
+    Floor: blocked when VIX < 15 (simple threshold, no hysteresis).
+    Returns (ceiling_blocked, floor_blocked, band_status).
+    """
+    # Ceiling with hysteresis
+    if prev_ceiling_blocked:
+        ceiling_blocked = vix_close >= DISP_VIX_RESUME
+    else:
+        ceiling_blocked = vix_close > DISP_VIX_CEILING
+
+    # Floor: simple threshold
+    floor_blocked = vix_close < DISP_VIX_FLOOR
+
+    if ceiling_blocked:
+        band_status = "VIX_TOO_HIGH"
+    elif floor_blocked:
+        band_status = "VIX_TOO_LOW"
+    else:
+        band_status = "TRADEABLE"
+
+    return ceiling_blocked, floor_blocked, band_status
+
+
 def load_previous_vix_state(path):
-    """Read previous vix_blocked state from existing regime file."""
+    """Read previous vix_blocked and displacement filter state from existing regime file."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("vix_blocked", False)
+        general_blocked = data.get("vix_blocked", False)
+        disp = data.get("displacement_filter", {})
+        disp_ceiling = disp.get("ceiling_blocked", False)
+        disp_floor = disp.get("floor_blocked", False)
+        return general_blocked, disp_ceiling, disp_floor
     except Exception:
-        return False
+        return False, False, False
 
 
-def build_output(regime, regime_bucket, composite, mults, details, vix_blocked):
+def build_output(regime, regime_bucket, composite, mults, details, vix_blocked,
+                  disp_ceiling_blocked=False, disp_floor_blocked=False, disp_band_status="TRADEABLE"):
     """Build the JSON output dict."""
     from datetime import timezone
     now = datetime.now().astimezone()
@@ -306,11 +342,21 @@ def build_output(regime, regime_bucket, composite, mults, details, vix_blocked):
         "stop_multiplier": mults["stop"],
         "target_multiplier": mults["target"],
         "vix_blocked": vix_blocked,
+        "displacement_filter": {
+            "vix_value": details["vix_close"],
+            "ceiling_blocked": disp_ceiling_blocked,
+            "floor_blocked": disp_floor_blocked,
+            "band_status": disp_band_status,
+            "ceiling_threshold": DISP_VIX_CEILING,
+            "resume_threshold": DISP_VIX_RESUME,
+            "floor_threshold": DISP_VIX_FLOOR,
+        },
         "details": details,
     }
 
 
-def print_summary(regime, composite, mults, details, signals, warnings, vix_blocked=False):
+def print_summary(regime, composite, mults, details, signals, warnings,
+                  vix_blocked=False, disp_band_status="TRADEABLE"):
     """Print a human-readable console summary."""
     print("\n" + "=" * 60)
     print("  VOLATILITY REGIME ANALYSIS")
@@ -324,6 +370,8 @@ def print_summary(regime, composite, mults, details, signals, warnings, vix_bloc
     print(f"  Stop Mult:   {mults['stop']:.2f}x")
     print(f"  Target Mult: {mults['target']:.2f}x")
     print(f"  VIX Filter:  {'BLOCKED (no trading)' if vix_blocked else 'ACTIVE (trading allowed)'}")
+    disp_icon = "TRADEABLE" if disp_band_status == "TRADEABLE" else f"BLOCKED ({disp_band_status})"
+    print(f"  Disp Filter: {disp_icon}  (ceiling={DISP_VIX_CEILING}, resume={DISP_VIX_RESUME}, floor={DISP_VIX_FLOOR})")
 
     print(f"\n  --- Signals ---")
     print(f"  VIX:             {details['vix_close']:.1f}  (pctl: {signals['vix_pctl']:.1%})")
@@ -372,14 +420,19 @@ def main():
         asset_df, vix_close, vix9d_close
     )
 
-    # VIX hysteresis filter
-    previous_blocked = load_previous_vix_state(output_path)
+    # VIX hysteresis filter (general + displacement)
+    previous_blocked, prev_disp_ceiling, prev_disp_floor = load_previous_vix_state(output_path)
     current_vix = details["vix_close"]
     vix_blocked = compute_vix_filter(current_vix, previous_blocked)
 
-    print_summary(regime, composite, mults, details, signals, warnings, vix_blocked)
+    disp_ceiling, disp_floor, disp_status = compute_displacement_vix_filter(
+        current_vix, prev_disp_ceiling, prev_disp_floor)
 
-    output_data = build_output(regime, bucket, composite, mults, details, vix_blocked)
+    print_summary(regime, composite, mults, details, signals, warnings,
+                  vix_blocked, disp_status)
+
+    output_data = build_output(regime, bucket, composite, mults, details, vix_blocked,
+                               disp_ceiling, disp_floor, disp_status)
 
     if args.dry_run:
         print("\n  [DRY RUN] Would write:")
