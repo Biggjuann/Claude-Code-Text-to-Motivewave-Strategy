@@ -43,6 +43,10 @@ ES_SYMBOL  = "ES=F"   # ES futures — current price for reference only
 STRIKE_RANGE_PCT = 0.15   # Only strikes within +-15% of spot (catches deep put walls)
 MIN_OI = 10               # Minimum open interest to include
 
+# Near-term session pin: only treat an expiry as "session pin" if it is within
+# this many calendar days. Beyond this it's structural, not a session-level pin.
+NEAR_TERM_MAX_DTE = 5
+
 # Risk-free rate (approximate, update periodically)
 RISK_FREE_RATE = 0.043
 
@@ -368,6 +372,14 @@ def compute_near_term_levels(calls, puts, spot, es_price, top_n=5):
         return None
 
     nearest_expiry = sorted(all_expiries)[0]
+
+    # Guard: if the nearest expiry with data is more than NEAR_TERM_MAX_DTE away,
+    # there is no session pin data — don't mistake a structural expiry for a pin.
+    dte_check = (datetime.strptime(nearest_expiry, "%Y-%m-%d") - datetime.now()).total_seconds() / (24 * 3600)
+    if dte_check > NEAR_TERM_MAX_DTE:
+        print(f"    Near-term: nearest expiry with data is {nearest_expiry} "
+              f"({dte_check:.1f}d) — exceeds {NEAR_TERM_MAX_DTE}d threshold, skipping session pin.")
+        return None
 
     near_calls = calls[calls["expiry"] == nearest_expiry].copy() if not calls.empty else pd.DataFrame()
     near_puts  = puts[puts["expiry"] == nearest_expiry].copy()  if not puts.empty else pd.DataFrame()
