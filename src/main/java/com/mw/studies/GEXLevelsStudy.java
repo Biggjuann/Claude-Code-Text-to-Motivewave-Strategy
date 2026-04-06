@@ -162,7 +162,7 @@ public class GEXLevelsStudy extends Study
         // --- Put Wall ---
         if (showPutWall) {
             double esLevel = parseNestedDouble(json, "put_wall", "es_level", Double.NaN);
-            if (!Double.isNaN(esLevel)) {
+            if (!Double.isNaN(esLevel) && esLevel > 0) {
                 var path = settings.getPath(PUT_WALL_PATH);
                 if (path != null && path.isEnabled()) {
                     Line line = new Line(new Coordinate(startTime, esLevel),
@@ -179,7 +179,7 @@ public class GEXLevelsStudy extends Study
         // --- Call Wall ---
         if (showCallWall) {
             double esLevel = parseNestedDouble(json, "call_wall", "es_level", Double.NaN);
-            if (!Double.isNaN(esLevel)) {
+            if (!Double.isNaN(esLevel) && esLevel > 0) {
                 var path = settings.getPath(CALL_WALL_PATH);
                 if (path != null && path.isEnabled()) {
                     Line line = new Line(new Coordinate(startTime, esLevel),
@@ -196,7 +196,7 @@ public class GEXLevelsStudy extends Study
         // --- Gamma Flip ---
         if (showGammaFlip) {
             double esLevel = parseNestedDouble(json, "gamma_flip", "es_level", Double.NaN);
-            if (!Double.isNaN(esLevel)) {
+            if (!Double.isNaN(esLevel) && esLevel > 0) {
                 var path = settings.getPath(GAMMA_FLIP_PATH);
                 if (path != null && path.isEnabled()) {
                     Line line = new Line(new Coordinate(startTime, esLevel),
